@@ -41,8 +41,10 @@ func (en *Engines) Close() error {
 	if err := en.Kv.Close(); err != nil {
 		return err
 	}
-	if err := en.Raft.Close(); err != nil {
-		return err
+	if en.Raft != nil {
+		if err := en.Raft.Close(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
