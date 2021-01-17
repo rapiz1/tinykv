@@ -14,7 +14,12 @@
 
 package raft
 
-import pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+import (
+	"errors"
+	"fmt"
+
+	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+)
 
 // RaftLog manage the log entries, its struct look like:
 //
@@ -56,7 +61,27 @@ type RaftLog struct {
 // to the state that it just commits and applies the latest snapshot.
 func newLog(storage Storage) *RaftLog {
 	// Your Code Here (2A).
-	return nil
+	hi, err := storage.LastIndex()
+	if err != nil {
+		panic(err)
+	}
+
+	lo, err := storage.FirstIndex()
+	if err != nil {
+		panic(err)
+	}
+
+	ents := make([]pb.Entry, 0)
+	sents, err := storage.Entries(lo, hi+1)
+	if err == nil {
+		ents = append(ents, sents...)
+	}
+
+	return &RaftLog{
+		storage: storage,
+		entries: ents,
+		stabled: hi,
+	}
 }
 
 // We need to compact the log entries in some point of time like
@@ -66,26 +91,99 @@ func (l *RaftLog) maybeCompact() {
 	// Your Code Here (2C).
 }
 
+func (l *RaftLog) convertIdx(i int) int {
+	return i - int(l.entries[0].Index)
+}
+
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
-	return nil
+	return l.Entries(l.stabled+1, l.LastIndex()+1)
 }
 
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
-	return nil
+	return l.Entries(l.applied+1, l.committed+1)
 }
 
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
-	return 0
+	if len(l.entries) == 0 {
+		return 0
+	}
+	return l.entries[len(l.entries)-1].Index
+}
+
+func (l *RaftLog) FirstIndex() uint64 {
+	if len(l.entries) == 0 {
+		return 0
+	}
+	return l.entries[0].Index
 }
 
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
-	return 0, nil
+	if i == 0 {
+		return 0, nil
+	} else if i <= l.LastIndex() && i >= l.FirstIndex() {
+		if i-l.FirstIndex() >= uint64(len(l.entries)) {
+			fmt.Println(l.FirstIndex(), i, l.LastIndex(), l.entries, len(l.entries))
+			panic("out of range")
+		}
+		return l.entries[i-l.FirstIndex()].Term, nil
+	} else {
+		return 0, errors.New("term out of bound")
+	}
+}
+
+func (l *RaftLog) LastTerm() uint64 {
+	t, _ := l.Term(l.LastIndex())
+	return t
+}
+
+// [lo, hi)
+func (l *RaftLog) Entries(lo, hi uint64) []pb.Entry {
+	if hi <= lo {
+		return make([]pb.Entry, 0)
+	}
+	if hi > l.LastIndex()+1 {
+		panic("entry slice out of bound")
+	}
+
+	return l.entries[lo-l.FirstIndex() : hi-l.FirstIndex()]
+}
+
+func (l *RaftLog) EntriesWithPointers(lo, hi uint64) []*pb.Entry {
+	e := l.Entries(lo, hi)
+	ents := make([]*pb.Entry, 0, hi-lo)
+	for k := range e {
+		ents = append(ents, &e[k])
+	}
+	return ents
+}
+
+func (l *RaftLog) Append(entries ...*pb.Entry) {
+	for _, ent := range entries {
+		if l.LastIndex() < ent.Index {
+			l.entries = append(l.entries, *ent)
+		} else {
+			t, err := l.Term(ent.Index)
+			if err == nil && ent.Term == t {
+				continue
+			}
+			if ent.Index <= l.stabled {
+				if ent.Index-1 < 0 {
+					fmt.Println(ent)
+					panic("invalid idx")
+				}
+				l.stabled = ent.Index - 1
+			}
+			idx := ent.Index - l.FirstIndex()
+			l.entries[idx] = *ent
+			l.entries = l.entries[:idx+1]
+		}
+	}
 }
