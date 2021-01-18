@@ -216,9 +216,6 @@ func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
 	match := r.Prs[to].Match
 	next := r.Prs[to].Next
-	if next > r.RaftLog.LastIndex() {
-		return false
-	}
 	logTerm, err := r.RaftLog.Term(match)
 	if err != nil {
 		panic(err)
@@ -439,14 +436,12 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 
 	if err != nil || t != m.LogTerm {
 		rsp.Reject = true
-	}
-
-	if rsp.Reject == false {
+	} else {
 		r.RaftLog.Append(m.Entries...)
 		rsp.Index = r.RaftLog.LastIndex()
 
 		if m.Commit > r.RaftLog.committed {
-			r.RaftLog.committed = min(m.Commit, r.RaftLog.LastIndex())
+			r.RaftLog.committed = min(m.Commit, m.Index+uint64(len(m.Entries)))
 		}
 	}
 
@@ -466,6 +461,7 @@ func (r *Raft) handleAppendEntriesResponse(m pb.Message) {
 			return
 		}
 		r.Prs[m.From].Match = m.Index
+		r.Prs[m.From].Next = max(m.Index+1, r.Prs[m.From].Next)
 		// Update commited
 		mr := make([]int, 0, len(r.Prs))
 		for _, v := range r.Prs {
