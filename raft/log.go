@@ -146,7 +146,7 @@ func (l *RaftLog) LastTerm() uint64 {
 
 // [lo, hi)
 func (l *RaftLog) Entries(lo, hi uint64) []pb.Entry {
-	if hi <= lo {
+	if hi <= lo || lo > l.LastIndex() {
 		return make([]pb.Entry, 0)
 	}
 	if hi > l.LastIndex()+1 {
