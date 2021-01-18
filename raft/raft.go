@@ -190,6 +190,8 @@ func newRaft(c *Config) *Raft {
 		RaftLog:                 newLog(c.Storage),
 	}
 
+	raft.RaftLog.committed = hs.Commit
+
 	for _, v := range c.peers {
 		raft.Prs[v] = &Progress{0, 1}
 	}
