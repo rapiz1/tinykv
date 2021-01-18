@@ -77,6 +77,8 @@ func newLog(storage Storage) *RaftLog {
 		ents = append(ents, sents...)
 	}
 
+	//hs, _, _ := storage.InitialState()
+
 	return &RaftLog{
 		storage: storage,
 		entries: ents,
