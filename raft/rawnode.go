@@ -77,11 +77,12 @@ type RawNode struct {
 func NewRawNode(config *Config) (*RawNode, error) {
 	// Your Code Here (2A).
 	hs, _, _ := config.Storage.InitialState()
+	r := newRaft(config)
 	rn := &RawNode{
-		Raft: newRaft(config),
+		Raft: r,
 		lastState: Ready{
 			HardState: hs,
-			SoftState: &SoftState{},
+			SoftState: &SoftState{r.Lead, r.State},
 		},
 	}
 	return rn, nil
