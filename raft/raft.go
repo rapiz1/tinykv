@@ -172,7 +172,14 @@ func newRaft(c *Config) *Raft {
 	hi, _ := c.Storage.LastIndex()
 	term, _ := c.Storage.Term(hi)
 
-	hs, _, _ := c.Storage.InitialState()
+	hs, cfs, _ := c.Storage.InitialState()
+
+	peers := c.peers
+
+	if peers == nil {
+		peers = cfs.Nodes
+	}
+
 	if hs.Term != 0 {
 		term = hs.Term
 	}
@@ -192,8 +199,10 @@ func newRaft(c *Config) *Raft {
 
 	raft.RaftLog.committed = hs.Commit
 
-	for _, v := range c.peers {
-		raft.Prs[v] = &Progress{0, 1}
+	fi, _ := raft.RaftLog.storage.FirstIndex()
+	li := raft.RaftLog.LastIndex()
+	for _, v := range peers {
+		raft.Prs[v] = &Progress{fi - 1, li}
 	}
 
 	raft.RaftLog.applied = c.Applied
@@ -272,7 +281,7 @@ func (r *Raft) tick() {
 	// Your Code Here (2A).
 	if r.State == StateLeader {
 		r.heartbeatElapsed++
-		if r.heartbeatElapsed == r.heartbeatTimeout {
+		if r.heartbeatElapsed >= r.heartbeatTimeout {
 			r.heartbeatElapsed = 0
 			r.Step(pb.Message{
 				MsgType: pb.MessageType_MsgBeat,
@@ -280,7 +289,7 @@ func (r *Raft) tick() {
 		}
 	} else {
 		r.electionElapsed++
-		if r.electionElapsed == r.electionTimeout {
+		if r.electionElapsed >= r.electionTimeout {
 			r.electionElapsed = 0
 			r.Step(pb.Message{
 				MsgType: pb.MessageType_MsgHup,
@@ -292,12 +301,15 @@ func (r *Raft) tick() {
 // becomeFollower transform this peer's state to Follower
 func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	// Your Code Here (2A).
+	if r.State == StateFollower && r.Term == term && r.Lead == lead {
+		return
+	}
 	r.State = StateFollower
 	r.Term = term
 	r.Lead = lead
-	r.Vote = 0
-	r.heartbeatElapsed = 0
+	r.Vote = lead
 	r.electionTimeout = r.originalElectionTimeout + rand.Intn(r.originalElectionTimeout)
+	r.electionElapsed = 0
 }
 
 // becomeCandidate transform this peer's state to candidate
@@ -319,7 +331,7 @@ func (r *Raft) becomeCandidate() {
 }
 
 func (r *Raft) bcastRequstVote() {
-	for to, _ := range r.Prs {
+	for to := range r.Prs {
 		if to != r.id {
 			r.sendRequestVote(to)
 		}
@@ -331,11 +343,11 @@ func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
 	// NOTE: Leader should propose a noop entry on its term
 	r.State = StateLeader
+	r.heartbeatElapsed = 0
 	for k := range r.Prs {
 		if k == r.id {
 			r.Prs[k] = &Progress{r.RaftLog.LastIndex(), r.RaftLog.LastIndex() + 1}
 		} else {
-			r.Prs[k].Match = 0
 			r.Prs[k].Next = r.RaftLog.LastIndex()
 		}
 	}
@@ -407,7 +419,7 @@ func (r *Raft) Step(m pb.Message) error {
 }
 
 func (r *Raft) handleBeat() {
-	for to, _ := range r.Prs {
+	for to := range r.Prs {
 		if to != r.id {
 			r.sendHeartbeat(to)
 		}
@@ -583,7 +595,7 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 		r.becomeFollower(m.Term, m.From)
 	}
 
-	r.electionTimeout = 0
+	r.electionElapsed = 0
 
 	rsp := pb.Message{
 		MsgType: pb.MessageType_MsgHeartbeatResponse,

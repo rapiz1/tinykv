@@ -15,7 +15,6 @@
 package raft
 
 import (
-	"errors"
 	"fmt"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
@@ -75,6 +74,8 @@ func newLog(storage Storage) *RaftLog {
 	sents, err := storage.Entries(lo, hi+1)
 	if err == nil {
 		ents = append(ents, sents...)
+	} else {
+		panic(err)
 	}
 
 	//hs, _, _ := storage.InitialState()
@@ -113,14 +114,16 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
 	if len(l.entries) == 0 {
-		return 0
+		li, _ := l.storage.LastIndex()
+		return li
 	}
 	return l.entries[len(l.entries)-1].Index
 }
 
 func (l *RaftLog) FirstIndex() uint64 {
 	if len(l.entries) == 0 {
-		return 0
+		fi, _ := l.storage.FirstIndex()
+		return fi
 	}
 	return l.entries[0].Index
 }
@@ -132,12 +135,11 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 		return 0, nil
 	} else if i <= l.LastIndex() && i >= l.FirstIndex() {
 		if i-l.FirstIndex() >= uint64(len(l.entries)) {
-			fmt.Println(l.FirstIndex(), i, l.LastIndex(), l.entries, len(l.entries))
 			panic("out of range")
 		}
 		return l.entries[i-l.FirstIndex()].Term, nil
 	} else {
-		return 0, errors.New("term out of bound")
+		return l.storage.Term(i)
 	}
 }
 
