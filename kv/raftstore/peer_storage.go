@@ -327,11 +327,7 @@ func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.Write
 	}
 	ps.raftState.LastIndex = entries[len(entries)-1].Index
 	ps.raftState.LastTerm = entries[len(entries)-1].Term
-	raftWB.SetMeta(meta.RaftStateKey(regionID), &rspb.RaftLocalState{
-		HardState: ps.raftState.HardState,
-		LastIndex: ps.raftState.LastIndex,
-		LastTerm:  ps.raftState.LastTerm,
-	})
+	raftWB.SetMeta(meta.RaftStateKey(regionID), ps.raftState)
 	return nil
 }
 
