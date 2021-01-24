@@ -75,6 +75,8 @@ func newLog(storage Storage) *RaftLog {
 	sents, err := storage.Entries(lo, hi+1)
 	if err == nil {
 		ents = append(ents, sents...)
+	} else {
+		panic(err)
 	}
 
 	//hs, _, _ := storage.InitialState()
@@ -113,14 +115,16 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
 	if len(l.entries) == 0 {
-		return 0
+		li, _ := l.storage.LastIndex()
+		return li
 	}
 	return l.entries[len(l.entries)-1].Index
 }
 
 func (l *RaftLog) FirstIndex() uint64 {
 	if len(l.entries) == 0 {
-		return 0
+		fi, _ := l.storage.FirstIndex()
+		return fi
 	}
 	return l.entries[0].Index
 }
@@ -128,17 +132,13 @@ func (l *RaftLog) FirstIndex() uint64 {
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
-	if i == 0 {
-		return 0, nil
-	} else if i <= l.LastIndex() && i >= l.FirstIndex() {
+	if len(l.entries) != 0 && i >= l.FirstIndex() {
 		if i-l.FirstIndex() >= uint64(len(l.entries)) {
-			fmt.Println(l.FirstIndex(), i, l.LastIndex(), l.entries, len(l.entries))
-			panic("out of range")
+			return 0, errors.New("out of range")
 		}
 		return l.entries[i-l.FirstIndex()].Term, nil
-	} else {
-		return 0, errors.New("term out of bound")
 	}
+	return l.storage.Term(i)
 }
 
 func (l *RaftLog) LastTerm() uint64 {
@@ -151,16 +151,19 @@ func (l *RaftLog) Entries(lo, hi uint64) []pb.Entry {
 	if hi <= lo || lo > l.LastIndex() {
 		return make([]pb.Entry, 0)
 	}
-	if hi > l.LastIndex()+1 {
-		panic("entry slice out of bound")
-	}
+	hi = min(hi, l.LastIndex()+1)
+	/*
+		if hi > l.LastIndex()+1 {
+			panic("entry slice out of bound")
+		}
+	*/
 
 	return l.entries[lo-l.FirstIndex() : hi-l.FirstIndex()]
 }
 
 func (l *RaftLog) EntriesWithPointers(lo, hi uint64) []*pb.Entry {
 	e := l.Entries(lo, hi)
-	ents := make([]*pb.Entry, 0, hi-lo)
+	ents := make([]*pb.Entry, 0)
 	for k := range e {
 		ents = append(ents, &e[k])
 	}
