@@ -280,14 +280,12 @@ func (r *Raft) tick() {
 			r.Step(pb.Message{
 				MsgType: pb.MessageType_MsgBeat,
 			})
-			/*
-				r.votes[r.id] = true
-				if len(r.votes) < (len(r.Prs)+1)/2 {
-					r.becomeFollower(r.Term, 0)
-				} else {
-					r.votes = make(map[uint64]bool)
-				}
-			*/
+			r.votes[r.id] = true
+			if len(r.votes) < (len(r.Prs)+1)/2 {
+				r.becomeFollower(r.Term, 0)
+			} else {
+				r.votes = make(map[uint64]bool)
+			}
 		}
 	} else {
 		r.electionElapsed++
@@ -450,7 +448,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		MsgType: pb.MessageType_MsgAppendResponse,
 		To:      m.From,
 		From:    r.id,
-		Index:   r.RaftLog.LastIndex(),
+		Index:   m.Index,
 		Term:    r.Term,
 		Reject:  m.Term < r.Term,
 	}
@@ -476,8 +474,8 @@ func (r *Raft) handleAppendEntriesResponse(m pb.Message) {
 		return
 	}
 	if m.Reject == true {
-		r.Prs[m.From].Next--
-		if r.Prs[m.From].Next < 0 {
+		r.Prs[m.From].Next = m.Index
+		if r.Prs[m.From].Next <= 0 {
 			log.Panic("invalid match")
 		}
 		r.sendAppend(m.From)
