@@ -59,63 +59,67 @@ func (d *peerMsgHandler) HandleRaftReady() {
 }
 
 func (d *peerMsgHandler) process(e *eraftpb.Entry) {
-	p := d.proposals[0]
-	if p.index != e.Index || p.term != e.Term {
-		p.cb.Done(ErrRespStaleCommand(e.Term))
-	}
-	req := &raft_cmdpb.RaftCmdRequest{}
-	err := req.Unmarshal(e.Data)
+	r := &raft_cmdpb.Request{}
+	err := r.Unmarshal(e.Data)
 	if err != nil {
 		panic(err)
 	}
-	r := req.Requests[0]
-	if len(req.Requests) != 1 {
-		panic("long requests")
-	}
 	wb := &engine_util.WriteBatch{}
-	rsp := &raft_cmdpb.RaftCmdResponse{
-		Header: &raft_cmdpb.RaftResponseHeader{},
-	}
-	rsp.Responses = rsp.Responses[:0]
 	switch r.CmdType {
 	case raft_cmdpb.CmdType_Get:
-		val, err := engine_util.GetCF(d.ctx.engine.Kv, r.Get.GetCf(), r.Get.Key)
-		if err != nil {
-			panic(err)
-		}
-		rsp.Responses = append(rsp.Responses, &raft_cmdpb.Response{
-			CmdType: r.CmdType,
-			Get: &raft_cmdpb.GetResponse{
-				Value: val,
-			},
-		})
 	case raft_cmdpb.CmdType_Put:
 		wb.SetCF(r.Put.Cf, r.Put.Key, r.Put.Value)
-		rsp.Responses = append(rsp.Responses, &raft_cmdpb.Response{
-			CmdType: r.CmdType,
-			Put:     &raft_cmdpb.PutResponse{},
-		})
 	case raft_cmdpb.CmdType_Delete:
 		wb.DeleteCF(r.Delete.Cf, r.Delete.Key)
-		rsp.Responses = append(rsp.Responses, &raft_cmdpb.Response{
-			CmdType: r.CmdType,
-			Delete:  &raft_cmdpb.DeleteResponse{},
-		})
 	case raft_cmdpb.CmdType_Snap:
-		rsp.Responses = append(rsp.Responses, &raft_cmdpb.Response{
-			CmdType: r.CmdType,
-			Snap:    &raft_cmdpb.SnapResponse{Region: d.Region()},
-		})
-		p.cb.Txn = d.peerStorage.Engines.Kv.NewTransaction(false)
 	}
 
 	d.peerStorage.applyState.AppliedIndex = e.Index
 	wb.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState)
 	d.peerStorage.Engines.WriteKV(wb)
 
-	p.cb.Done(rsp)
-
-	d.proposals = d.proposals[1:]
+	if len(d.proposals) != 0 {
+		p := d.proposals[0]
+		if p.index == e.Index && p.term == e.Term {
+			rsp := &raft_cmdpb.RaftCmdResponse{
+				Header:    &raft_cmdpb.RaftResponseHeader{},
+				Responses: make([]*raft_cmdpb.Response, 0),
+			}
+			switch r.CmdType {
+			case raft_cmdpb.CmdType_Get:
+				val, err := engine_util.GetCF(d.ctx.engine.Kv, r.Get.GetCf(), r.Get.Key)
+				if err != nil {
+					panic(err)
+				}
+				rsp.Responses = append(rsp.Responses, &raft_cmdpb.Response{
+					CmdType: r.CmdType,
+					Get: &raft_cmdpb.GetResponse{
+						Value: val,
+					},
+				})
+			case raft_cmdpb.CmdType_Put:
+				rsp.Responses = append(rsp.Responses, &raft_cmdpb.Response{
+					CmdType: r.CmdType,
+					Put:     &raft_cmdpb.PutResponse{},
+				})
+			case raft_cmdpb.CmdType_Delete:
+				rsp.Responses = append(rsp.Responses, &raft_cmdpb.Response{
+					CmdType: r.CmdType,
+					Delete:  &raft_cmdpb.DeleteResponse{},
+				})
+			case raft_cmdpb.CmdType_Snap:
+				rsp.Responses = append(rsp.Responses, &raft_cmdpb.Response{
+					CmdType: r.CmdType,
+					Snap:    &raft_cmdpb.SnapResponse{Region: d.Region()},
+				})
+				p.cb.Txn = d.peerStorage.Engines.Kv.NewTransaction(false)
+			}
+			p.cb.Done(rsp)
+		} else {
+			p.cb.Done(ErrRespStaleCommand(p.term))
+		}
+		d.proposals = d.proposals[1:]
+	}
 }
 
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
@@ -199,16 +203,16 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		}
 	}
 
+	data, err := msg.Requests[0].Marshal()
+	if err != nil {
+		panic(err)
+	}
+
 	d.proposals = append(d.proposals, &proposal{
 		index: d.nextProposalIndex(),
 		term:  d.Term(),
 		cb:    cb,
 	})
-
-	data, err := msg.Marshal()
-	if err != nil {
-		panic(err)
-	}
 
 	d.RaftGroup.Propose(data)
 }
