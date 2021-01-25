@@ -286,6 +286,12 @@ func (r *Raft) tick() {
 			r.Step(pb.Message{
 				MsgType: pb.MessageType_MsgBeat,
 			})
+			r.votes[r.id] = true
+			if len(r.votes) < (len(r.Prs)+1)/2 {
+				r.becomeCandidate()
+			} else {
+				r.votes = make(map[uint64]bool)
+			}
 		}
 	} else {
 		r.electionElapsed++
@@ -344,11 +350,12 @@ func (r *Raft) becomeLeader() {
 	// NOTE: Leader should propose a noop entry on its term
 	r.State = StateLeader
 	r.heartbeatElapsed = 0
+	r.votes = make(map[uint64]bool)
 	for k := range r.Prs {
 		if k == r.id {
 			r.Prs[k] = &Progress{r.RaftLog.LastIndex(), r.RaftLog.LastIndex() + 1}
 		} else {
-			r.Prs[k].Next = r.RaftLog.LastIndex()
+			r.Prs[k].Next = r.RaftLog.LastIndex() + 1
 		}
 	}
 	r.Step(pb.Message{
@@ -366,6 +373,8 @@ func (r *Raft) Step(m pb.Message) error {
 			// should reject
 		} else if m.Term > r.Term {
 			r.becomeFollower(m.Term, 0)
+		} else if m.Term == r.Term && r.State == StateCandidate && m.MsgType == pb.MessageType_MsgAppend {
+			r.becomeFollower(m.Term, m.From)
 		}
 
 		if m.Commit > r.RaftLog.committed && m.From == r.Lead {
@@ -396,7 +405,6 @@ func (r *Raft) Step(m pb.Message) error {
 		case pb.MessageType_MsgRequestVoteResponse:
 			r.handleRequestVoteResponse(m)
 		case pb.MessageType_MsgAppend:
-			r.becomeFollower(m.Term, m.From)
 			r.handleAppendEntries(m)
 		case pb.MessageType_MsgRequestVote:
 			r.handleRequestVote(m)
@@ -405,6 +413,10 @@ func (r *Raft) Step(m pb.Message) error {
 		switch m.MsgType {
 		case pb.MessageType_MsgBeat:
 			r.handleBeat()
+		case pb.MessageType_MsgHeartbeat:
+			r.handleHeartbeat(m) // must reject
+		case pb.MessageType_MsgHeartbeatResponse:
+			r.handleHeartbeatResponse(m)
 		case pb.MessageType_MsgAppend:
 			r.rejectMessage(m, pb.MessageType_MsgAppendResponse)
 		case pb.MessageType_MsgAppendResponse:
@@ -464,6 +476,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 
 func (r *Raft) handleAppendEntriesResponse(m pb.Message) {
 	if m.Reject == true {
+		panic("match failed")
 		r.Prs[m.From].Match--
 		if r.Prs[m.From].Match < 0 {
 			panic("invalid match")
@@ -515,8 +528,8 @@ func (r *Raft) rejectMessage(m pb.Message, mt pb.MessageType) {
 
 func (r *Raft) handlePropose(m pb.Message) {
 	//fmt.Println("propose change")
-	for _, ent := range m.Entries {
-		ent.Index = r.RaftLog.LastIndex() + 1
+	for i, ent := range m.Entries {
+		ent.Index = r.RaftLog.LastIndex() + uint64(i) + 1
 		ent.Term = r.Term
 	}
 	r.RaftLog.Append(m.Entries...)
@@ -553,13 +566,10 @@ func (r *Raft) handleRequestVote(m pb.Message) {
 			}
 		}
 
-		if r.Vote == 0 && upToDate {
+		if (r.Vote == 0 || r.Vote == m.From) && upToDate {
 			r.Vote = m.From
 			rsp.Reject = false
-		}
-
-		if r.Term == m.Term && r.Vote == m.From {
-			rsp.Reject = false
+			//r.electionElapsed = 0
 		}
 	}
 	r.send(rsp)
@@ -606,6 +616,15 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 	}
 
 	r.send(rsp)
+}
+
+func (r *Raft) handleHeartbeatResponse(m pb.Message) {
+	if m.Term < r.Term {
+		return
+	}
+	if r.State == StateLeader {
+		r.votes[m.From] = true
+	}
 }
 
 // handleSnapshot handle Snapshot RPC request

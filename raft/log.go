@@ -153,9 +153,12 @@ func (l *RaftLog) Entries(lo, hi uint64) []pb.Entry {
 	if hi <= lo || lo > l.LastIndex() {
 		return make([]pb.Entry, 0)
 	}
-	if hi > l.LastIndex()+1 {
-		panic("entry slice out of bound")
-	}
+	hi = min(hi, l.LastIndex()+1)
+	/*
+		if hi > l.LastIndex()+1 {
+			panic("entry slice out of bound")
+		}
+	*/
 
 	return l.entries[lo-l.FirstIndex() : hi-l.FirstIndex()]
 }
