@@ -218,6 +218,7 @@ func (rn *RawNode) Advance(rd Ready) {
 		rn.Raft.RaftLog.stabled += uint64(len(rd.Entries))
 	}
 	rn.Raft.msgs = rn.Raft.msgs[0:0]
+	rn.Raft.RaftLog.maybeCompact()
 }
 
 // GetProgress return the the Progress of this node and its peers, if this
