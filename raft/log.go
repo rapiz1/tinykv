@@ -132,9 +132,7 @@ func (l *RaftLog) FirstIndex() uint64 {
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
-	if i == 0 {
-		return 0, nil
-	} else if len(l.entries) != 0 && i >= l.FirstIndex() {
+	if len(l.entries) != 0 && i >= l.FirstIndex() {
 		if i-l.FirstIndex() >= uint64(len(l.entries)) {
 			return 0, errors.New("out of range")
 		}
