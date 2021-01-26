@@ -199,7 +199,9 @@ func newRaft(c *Config) *Raft {
 		raft.Prs[v] = &Progress{fi - 1, li}
 	}
 
-	raft.RaftLog.applied = c.Applied
+	if c.Applied != 0 {
+		raft.RaftLog.applied = c.Applied
+	}
 
 	return &raft
 }
@@ -213,6 +215,22 @@ func (r *Raft) send(m pb.Message) {
 	r.msgs = append(r.msgs, m)
 }
 
+func (r *Raft) sendSnapshot(to uint64) {
+	s, err := r.RaftLog.storage.Snapshot()
+	if err != nil {
+		return
+	}
+	r.send(pb.Message{
+		MsgType:  pb.MessageType_MsgSnapshot,
+		From:     r.id,
+		To:       to,
+		Term:     r.Term,
+		Index:    s.Metadata.Index,
+		LogTerm:  s.Metadata.Term,
+		Snapshot: &s,
+	})
+}
+
 // sendAppend sends an append RPC with new entries (if any) and the
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
@@ -223,7 +241,12 @@ func (r *Raft) sendAppend(to uint64) bool {
 	index := next - 1
 	logTerm, err := r.RaftLog.Term(index)
 	if err != nil {
-		log.Panic(err, r.RaftLog.FirstIndex(), next, r.RaftLog.LastIndex())
+		if err == ErrCompacted {
+			r.sendSnapshot(to)
+			return false
+		} else {
+			log.Panic(err, r.RaftLog.FirstIndex(), next, r.RaftLog.LastIndex())
+		}
 	}
 	msg := pb.Message{
 		MsgType: pb.MessageType_MsgAppend,
@@ -376,6 +399,11 @@ func (r *Raft) Step(m pb.Message) error {
 		}
 	}
 
+	if m.MsgType == pb.MessageType_MsgSnapshot {
+		r.handleSnapshot(m)
+		return nil
+	}
+
 	switch r.State {
 	case StateFollower:
 		switch m.MsgType {
@@ -515,14 +543,14 @@ func (r *Raft) handleAppendEntriesResponse(m pb.Message) {
 
 func (r *Raft) rejectMessage(m pb.Message) {
 	var mt pb.MessageType
-	if m.MsgType == pb.MessageType_MsgAppend {
+	if m.MsgType == pb.MessageType_MsgAppend || m.MsgType == pb.MessageType_MsgSnapshot {
 		mt = pb.MessageType_MsgAppendResponse
 	} else if m.MsgType == pb.MessageType_MsgHeartbeat {
 		mt = pb.MessageType_MsgHeartbeatResponse
 	} else if m.MsgType == pb.MessageType_MsgRequestVote {
 		mt = pb.MessageType_MsgRequestVoteResponse
 	} else {
-		log.Panic("can't reject msg")
+		log.Warn("can't reject msg ", m)
 	}
 
 	r.send(pb.Message{
@@ -541,13 +569,7 @@ func (r *Raft) handlePropose(m pb.Message) {
 		ent.Term = r.Term
 	}
 	r.RaftLog.Append(m.Entries...)
-	for to := range r.Prs {
-		if to == r.id {
-			r.Prs[to] = &Progress{r.RaftLog.LastIndex(), r.RaftLog.LastIndex() + 1}
-		} else {
-			r.Prs[to].Next = r.RaftLog.LastIndex()
-		}
-	}
+	r.Prs[r.id] = &Progress{r.RaftLog.LastIndex(), r.RaftLog.LastIndex() + 1}
 	r.bcastAppend()
 	if len(r.Prs) == 1 {
 		r.RaftLog.committed++
@@ -638,6 +660,39 @@ func (r *Raft) handleHeartbeatResponse(m pb.Message) {
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
 	// Your Code Here (2C).
+	if m.Term < r.Term || m.Index < r.RaftLog.committed {
+		r.rejectMessage(m)
+		return
+	}
+	if m.Index < r.RaftLog.committed {
+		r.rejectMessage(m)
+		return
+	}
+	s := m.Snapshot
+	sm := s.Metadata
+	r.becomeFollower(max(r.Term, sm.Term), m.From)
+	r.RaftLog.entries = r.RaftLog.entries[:0]
+	r.RaftLog.committed = sm.Index
+	r.RaftLog.applied = sm.Index
+	r.RaftLog.stabled = sm.Index
+	r.Prs = make(map[uint64]*Progress)
+	for _, peer := range sm.ConfState.Nodes {
+		if uint64(peer) == r.id {
+			r.Prs[uint64(peer)] = &Progress{r.RaftLog.LastIndex(), r.RaftLog.LastIndex() + 1}
+		} else {
+			r.Prs[uint64(peer)] = &Progress{sm.Index, r.RaftLog.LastIndex() + 1}
+		}
+	}
+	r.RaftLog.pendingSnapshot = s
+	r.send(pb.Message{
+		MsgType: pb.MessageType_MsgAppendResponse,
+		From:    r.id,
+		To:      m.From,
+		Term:    r.Term,
+		Commit:  r.RaftLog.committed,
+		Index:   r.RaftLog.LastIndex(),
+		LogTerm: r.RaftLog.LastTerm(),
+	})
 }
 
 // addNode add a new node to raft group

@@ -59,19 +59,47 @@ func (d *peerMsgHandler) HandleRaftReady() {
 }
 
 func (d *peerMsgHandler) process(e *eraftpb.Entry) {
-	r := &raft_cmdpb.Request{}
-	err := r.Unmarshal(e.Data)
+	cmd := &raft_cmdpb.RaftCmdRequest{}
+	err := cmd.Unmarshal(e.Data)
 	if err != nil {
 		panic(err)
 	}
+	var r *raft_cmdpb.Request
+
+	if len(cmd.Requests) > 0 {
+		r = cmd.Requests[0]
+	} else if len(cmd.Requests) > 1 {
+		log.Panic("more than one request")
+	}
+
+	ar := cmd.AdminRequest
+
+	if len(cmd.Requests) != 0 && ar != nil {
+		log.Panic("request and admin request")
+	}
+
 	wb := &engine_util.WriteBatch{}
-	switch r.CmdType {
-	case raft_cmdpb.CmdType_Get:
-	case raft_cmdpb.CmdType_Put:
-		wb.SetCF(r.Put.Cf, r.Put.Key, r.Put.Value)
-	case raft_cmdpb.CmdType_Delete:
-		wb.DeleteCF(r.Delete.Cf, r.Delete.Key)
-	case raft_cmdpb.CmdType_Snap:
+	if r != nil {
+		switch r.CmdType {
+		case raft_cmdpb.CmdType_Get:
+		case raft_cmdpb.CmdType_Put:
+			wb.SetCF(r.Put.Cf, r.Put.Key, r.Put.Value)
+		case raft_cmdpb.CmdType_Delete:
+			wb.DeleteCF(r.Delete.Cf, r.Delete.Key)
+		case raft_cmdpb.CmdType_Snap:
+		}
+	}
+
+	if ar != nil {
+		switch ar.CmdType {
+		case raft_cmdpb.AdminCmdType_CompactLog:
+			d.peerStorage.applyState.TruncatedState = &rspb.RaftTruncatedState{
+				Index: ar.CompactLog.CompactIndex,
+				Term:  ar.CompactLog.CompactTerm,
+			}
+			d.ScheduleCompactLog(0, ar.CompactLog.CompactIndex)
+			wb.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState)
+		}
 	}
 
 	d.peerStorage.applyState.AppliedIndex = e.Index
@@ -85,34 +113,44 @@ func (d *peerMsgHandler) process(e *eraftpb.Entry) {
 				Header:    &raft_cmdpb.RaftResponseHeader{},
 				Responses: make([]*raft_cmdpb.Response, 0),
 			}
-			switch r.CmdType {
-			case raft_cmdpb.CmdType_Get:
-				val, err := engine_util.GetCF(d.ctx.engine.Kv, r.Get.GetCf(), r.Get.Key)
-				if err != nil {
-					panic(err)
+			if r != nil {
+				switch r.CmdType {
+				case raft_cmdpb.CmdType_Get:
+					val, err := engine_util.GetCF(d.ctx.engine.Kv, r.Get.GetCf(), r.Get.Key)
+					if err != nil {
+						panic(err)
+					}
+					rsp.Responses = append(rsp.Responses, &raft_cmdpb.Response{
+						CmdType: r.CmdType,
+						Get: &raft_cmdpb.GetResponse{
+							Value: val,
+						},
+					})
+				case raft_cmdpb.CmdType_Put:
+					rsp.Responses = append(rsp.Responses, &raft_cmdpb.Response{
+						CmdType: r.CmdType,
+						Put:     &raft_cmdpb.PutResponse{},
+					})
+				case raft_cmdpb.CmdType_Delete:
+					rsp.Responses = append(rsp.Responses, &raft_cmdpb.Response{
+						CmdType: r.CmdType,
+						Delete:  &raft_cmdpb.DeleteResponse{},
+					})
+				case raft_cmdpb.CmdType_Snap:
+					rsp.Responses = append(rsp.Responses, &raft_cmdpb.Response{
+						CmdType: r.CmdType,
+						Snap:    &raft_cmdpb.SnapResponse{Region: d.Region()},
+					})
+					p.cb.Txn = d.peerStorage.Engines.Kv.NewTransaction(false)
 				}
-				rsp.Responses = append(rsp.Responses, &raft_cmdpb.Response{
-					CmdType: r.CmdType,
-					Get: &raft_cmdpb.GetResponse{
-						Value: val,
-					},
-				})
-			case raft_cmdpb.CmdType_Put:
-				rsp.Responses = append(rsp.Responses, &raft_cmdpb.Response{
-					CmdType: r.CmdType,
-					Put:     &raft_cmdpb.PutResponse{},
-				})
-			case raft_cmdpb.CmdType_Delete:
-				rsp.Responses = append(rsp.Responses, &raft_cmdpb.Response{
-					CmdType: r.CmdType,
-					Delete:  &raft_cmdpb.DeleteResponse{},
-				})
-			case raft_cmdpb.CmdType_Snap:
-				rsp.Responses = append(rsp.Responses, &raft_cmdpb.Response{
-					CmdType: r.CmdType,
-					Snap:    &raft_cmdpb.SnapResponse{Region: d.Region()},
-				})
-				p.cb.Txn = d.peerStorage.Engines.Kv.NewTransaction(false)
+			}
+			if ar != nil {
+				switch ar.CmdType {
+				case raft_cmdpb.AdminCmdType_CompactLog:
+					rsp.AdminResponse = &raft_cmdpb.AdminResponse{
+						CompactLog: &raft_cmdpb.CompactLogResponse{},
+					}
+				}
 			}
 			p.cb.Done(rsp)
 		} else {
@@ -203,7 +241,7 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		}
 	}
 
-	data, err := msg.Requests[0].Marshal()
+	data, err := msg.Marshal()
 	if err != nil {
 		panic(err)
 	}

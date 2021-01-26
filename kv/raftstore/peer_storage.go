@@ -17,6 +17,7 @@ import (
 	"github.com/pingcap-incubator/tinykv/log"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/metapb"
+	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_serverpb"
 	rspb "github.com/pingcap-incubator/tinykv/proto/pkg/raft_serverpb"
 	"github.com/pingcap-incubator/tinykv/raft"
 	"github.com/pingcap/errors"
@@ -343,7 +344,45 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	// and send RegionTaskApply task to region worker through ps.regionSched, also remember call ps.clearMeta
 	// and ps.clearExtraData to delete stale data
 	// Your Code Here (2C).
-	return nil, nil
+
+	ps.clearMeta(kvWB, raftWB)
+	ps.clearExtraData(snapData.Region)
+
+	snapIndex := snapshot.Metadata.Index
+	snapTerm := snapshot.Metadata.Term
+	ps.raftState.LastIndex = snapIndex
+	ps.raftState.LastTerm = snapTerm
+	ps.raftState.HardState.Commit = snapIndex
+	ps.applyState = &rspb.RaftApplyState{
+		AppliedIndex: snapIndex,
+		TruncatedState: &raft_serverpb.RaftTruncatedState{
+			Index: snapIndex,
+			Term:  snapTerm,
+		},
+	}
+	prevRegion := ps.region
+	ps.region = snapData.Region
+	result := &ApplySnapResult{PrevRegion: prevRegion, Region: ps.region}
+
+	raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
+	kvWB.SetMeta(meta.ApplyStateKey(ps.region.Id), ps.applyState)
+	kvWB.SetMeta(meta.RegionStateKey(ps.region.Id), &rspb.RegionLocalState{
+		State:  raft_serverpb.PeerState_Normal,
+		Region: ps.region,
+	})
+
+	notifier := make(chan bool)
+	ps.snapState.StateType = snap.SnapState_Applying
+	ps.regionSched <- &runner.RegionTaskApply{
+		RegionId: ps.region.Id,
+		Notifier: notifier,
+		SnapMeta: snapshot.Metadata,
+		StartKey: prevRegion.StartKey,
+		EndKey:   prevRegion.EndKey,
+	}
+	<-notifier
+	log.Infof("%v has applied snapshot", ps.Tag)
+	return result, nil
 }
 
 // Save memory states to disk.
@@ -354,19 +393,19 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	raftWb := &engine_util.WriteBatch{}
 	kvWb := &engine_util.WriteBatch{}
 
+	var res *ApplySnapResult
+	var err error
+
+	if !raft.IsEmptySnap(&ready.Snapshot) {
+		res, err = ps.ApplySnapshot(&ready.Snapshot, kvWb, raftWb)
+	}
+
 	if !raft.IsEmptyHardState(ready.HardState) {
 		ps.raftState.HardState = &ready.HardState
 	}
 
 	if ready.Entries != nil {
 		ps.Append(ready.Entries, raftWb)
-	}
-
-	var res *ApplySnapResult
-	var err error
-
-	if !raft.IsEmptySnap(&ready.Snapshot) {
-		res, err = ps.ApplySnapshot(&ready.Snapshot, kvWb, raftWb)
 	}
 
 	ps.Engines.WriteKV(kvWb)
