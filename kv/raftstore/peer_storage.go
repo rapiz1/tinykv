@@ -346,7 +346,7 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	// Your Code Here (2C).
 
 	ps.clearMeta(kvWB, raftWB)
-	ps.clearExtraData(ps.region)
+	ps.clearExtraData(snapData.Region)
 
 	snapIndex := snapshot.Metadata.Index
 	snapTerm := snapshot.Metadata.Term
@@ -360,9 +360,10 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 			Term:  snapTerm,
 		},
 	}
-	result := &ApplySnapResult{PrevRegion: ps.region, Region: snapData.Region}
-
+	prevRegion := ps.region
 	ps.region = snapData.Region
+	result := &ApplySnapResult{PrevRegion: prevRegion, Region: ps.region}
+
 	raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
 	kvWB.SetMeta(meta.ApplyStateKey(ps.region.Id), ps.applyState)
 	kvWB.SetMeta(meta.RegionStateKey(ps.region.Id), &rspb.RegionLocalState{
@@ -370,16 +371,17 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 		Region: ps.region,
 	})
 
-	var notifier chan bool
+	notifier := make(chan bool)
 	ps.snapState.StateType = snap.SnapState_Applying
-	ps.regionSched <- runner.RegionTaskApply{
+	ps.regionSched <- &runner.RegionTaskApply{
 		RegionId: ps.region.Id,
 		Notifier: notifier,
 		SnapMeta: snapshot.Metadata,
-		StartKey: ps.region.StartKey,
-		EndKey:   ps.region.EndKey,
+		StartKey: prevRegion.StartKey,
+		EndKey:   prevRegion.EndKey,
 	}
 	<-notifier
+	log.Infof("%v has applied snapshot", ps.Tag)
 	return result, nil
 }
 
@@ -391,19 +393,19 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	raftWb := &engine_util.WriteBatch{}
 	kvWb := &engine_util.WriteBatch{}
 
+	var res *ApplySnapResult
+	var err error
+
+	if !raft.IsEmptySnap(&ready.Snapshot) {
+		res, err = ps.ApplySnapshot(&ready.Snapshot, kvWb, raftWb)
+	}
+
 	if !raft.IsEmptyHardState(ready.HardState) {
 		ps.raftState.HardState = &ready.HardState
 	}
 
 	if ready.Entries != nil {
 		ps.Append(ready.Entries, raftWb)
-	}
-
-	var res *ApplySnapResult
-	var err error
-
-	if !raft.IsEmptySnap(&ready.Snapshot) {
-		res, err = ps.ApplySnapshot(&ready.Snapshot, kvWb, raftWb)
 	}
 
 	ps.Engines.WriteKV(kvWb)
