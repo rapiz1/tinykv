@@ -671,6 +671,7 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	s := m.Snapshot
 	sm := s.Metadata
 	r.becomeFollower(max(r.Term, sm.Term), m.From)
+	r.RaftLog.entries = r.RaftLog.entries[:0]
 	r.RaftLog.committed = sm.Index
 	r.RaftLog.applied = sm.Index
 	r.RaftLog.stabled = sm.Index
