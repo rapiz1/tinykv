@@ -16,7 +16,6 @@ package raft
 
 import (
 	"errors"
-	"fmt"
 	"sort"
 
 	"github.com/pingcap-incubator/tinykv/log"
@@ -168,15 +167,15 @@ func (l *RaftLog) LastTerm() uint64 {
 
 // [lo, hi)
 func (l *RaftLog) Entries(lo, hi uint64) []pb.Entry {
+	ret := make([]pb.Entry, 0)
 	if hi <= lo || lo > l.LastIndex() {
-		return make([]pb.Entry, 0)
+		return ret
 	}
 	/*
 		if hi > l.LastIndex()+1 {
 			panic("entry slice out of bound")
 		}
 	*/
-	l.maybeCompact()
 	if lo < l.FirstIndex() {
 		t, err := l.Term(lo)
 		log.Info(t, err, l.entries)
@@ -185,39 +184,29 @@ func (l *RaftLog) Entries(lo, hi uint64) []pb.Entry {
 
 	hi = min(l.LastIndex()+1, hi)
 
-	sli, err := l.storage.LastIndex()
-	if err != nil {
-		log.Panic(err)
+	if len(l.entries) != 0 {
+		var loInEnt, hiInEnt uint64
+		if lo >= l.entries[0].Index {
+			loInEnt = lo - l.entries[0].Index
+		}
+		if hi >= l.entries[0].Index {
+			hiInEnt = hi - l.entries[0].Index
+		}
+		ret = append(ret, l.entries[loInEnt:hiInEnt]...)
 	}
 
-	if len(l.entries) != 0 {
-		fi := l.entries[0].Index
-		if fi <= lo { // fi <= lo <= hi
-			return l.entries[lo-fi : min(hi-fi, uint64(len(l.entries)))]
-		} else if fi < hi { // lo < fi < hi
-			//fmt.Println("storage mem")
-			ents, err := l.storage.Entries(lo, min(fi+1, sli+1))
-			if err != nil {
-				log.Panic(err)
-			}
-			ents = append(ents, l.entries[:hi-fi]...)
-			return ents
-		} else { // lo <= hi <= fi
-			//fmt.Println("all in storage")
-			ents, err := l.storage.Entries(lo, hi)
-			if err != nil {
-				fmt.Println(lo, hi, sli, fi)
-				log.Panic(err)
-			}
-			return ents
+	if len(l.entries) == 0 || lo < l.entries[0].Index {
+		hiInStr := hi
+		if len(l.entries) != 0 {
+			hiInStr = min(hiInStr, l.entries[0].Index)
 		}
-	} else {
-		ents, err := l.storage.Entries(lo, hi)
+		ents, err := l.storage.Entries(lo, hiInStr)
 		if err != nil {
-			log.Panic(err)
+			panic(err)
 		}
-		return ents
+		ret = append(ret, ents...)
 	}
+	return ret
 }
 
 func (l *RaftLog) EntriesWithPointers(lo, hi uint64) []*pb.Entry {
@@ -230,7 +219,6 @@ func (l *RaftLog) EntriesWithPointers(lo, hi uint64) []*pb.Entry {
 }
 
 func (l *RaftLog) Append(entries ...*pb.Entry) {
-	l.maybeCompact()
 	for _, ent := range entries {
 		if l.LastIndex() < ent.Index {
 			l.entries = append(l.entries, *ent)
@@ -240,30 +228,20 @@ func (l *RaftLog) Append(entries ...*pb.Entry) {
 			if err == nil && ent.Term == t {
 				continue
 			}
-			if ent.Index <= l.stabled {
-				if ent.Index-1 < 0 {
-					fmt.Println(ent)
-					panic("invalid idx")
-				}
-				l.stabled = ent.Index - 1
-				l.entries = l.entries[:0]
+			if len(l.entries) == 0 {
 				l.entries = append(l.entries, *ent)
 			} else {
-				if len(l.entries) == 0 {
-					l.entries = append(l.entries, *ent)
-					li, err := l.storage.LastIndex()
-					if err != nil {
-						log.Panic(err)
-					}
-					if li+1 != ent.Index {
-						log.Panic(li, l.stabled, ent)
-					}
-				} else {
-					idx := ent.Index - l.entries[0].Index
-					l.entries[idx] = *ent
-					l.entries = l.entries[:idx+1]
+				var idx uint64
+				if ent.Index > l.entries[0].Index {
+					idx = ent.Index - l.entries[0].Index
 				}
+				if idx >= uint64(len(l.entries)) {
+					log.Panic(idx, len(l.entries), ent, l.entries)
+				}
+				l.entries[idx] = *ent
+				l.entries = l.entries[:idx+1]
 			}
+			l.stabled = min(ent.Index-1, l.stabled)
 		}
 	}
 }
