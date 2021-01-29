@@ -376,7 +376,6 @@ func (r *Raft) campaign() {
 func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
 	// NOTE: Leader should propose a noop entry on its term
-	log.Info(r.id, "become leader")
 	r.State = StateLeader
 	r.heartbeatElapsed = 0
 	r.votes = make(map[uint64]bool)
