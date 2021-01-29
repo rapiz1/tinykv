@@ -91,6 +91,19 @@ func newLog(storage Storage) *RaftLog {
 	}
 }
 
+func validateEntries(entries []pb.Entry) {
+	if len(entries) == 0 {
+		return
+	}
+	for i := range entries {
+		if i != 0 {
+			if entries[i].Index != entries[i-1].Index+1 {
+				log.Panic("invalid entries", entries)
+			}
+		}
+	}
+}
+
 // We need to compact the log entries in some point of time like
 // storage compact stabled log entries prevent the log entries
 // grow unlimitedly in memory
@@ -184,17 +197,6 @@ func (l *RaftLog) Entries(lo, hi uint64) []pb.Entry {
 
 	hi = min(l.LastIndex()+1, hi)
 
-	if len(l.entries) != 0 {
-		var loInEnt, hiInEnt uint64
-		if lo >= l.entries[0].Index {
-			loInEnt = lo - l.entries[0].Index
-		}
-		if hi >= l.entries[0].Index {
-			hiInEnt = hi - l.entries[0].Index
-		}
-		ret = append(ret, l.entries[loInEnt:hiInEnt]...)
-	}
-
 	if len(l.entries) == 0 || lo < l.entries[0].Index {
 		hiInStr := hi
 		if len(l.entries) != 0 {
@@ -206,6 +208,28 @@ func (l *RaftLog) Entries(lo, hi uint64) []pb.Entry {
 		}
 		ret = append(ret, ents...)
 	}
+
+	if len(l.entries) != 0 {
+		var loInEnt, hiInEnt uint64
+		if lo >= l.entries[0].Index {
+			loInEnt = lo - l.entries[0].Index
+		}
+		if hi >= l.entries[0].Index {
+			hiInEnt = hi - l.entries[0].Index
+		}
+		if hiInEnt > uint64(len(l.entries)) {
+			log.Panic(hi, l.LastIndex(), l.entries)
+		}
+
+		ret = append(ret, l.entries[loInEnt:hiInEnt]...)
+	}
+
+	if ret[0].Index != lo {
+		log.Info(l.entries)
+		log.Panic(lo, hi, ret)
+	}
+
+	validateEntries(ret)
 	return ret
 }
 
@@ -221,6 +245,10 @@ func (l *RaftLog) EntriesWithPointers(lo, hi uint64) []*pb.Entry {
 func (l *RaftLog) Append(entries ...*pb.Entry) {
 	for _, ent := range entries {
 		if l.LastIndex() < ent.Index {
+			if ent.Index != l.LastIndex()+1 {
+				log.Info(l.Entries(l.FirstIndex(), l.LastIndex()+1))
+				log.Panic(l.LastIndex(), ent.Index, l.entries, ent)
+			}
 			l.entries = append(l.entries, *ent)
 		} else {
 			// ent.Index <= l.LastIndex
