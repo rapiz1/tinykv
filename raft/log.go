@@ -155,6 +155,9 @@ func (l *RaftLog) LastIndex() uint64 {
 
 func (l *RaftLog) FirstIndex() uint64 {
 	fi, _ := l.storage.FirstIndex()
+	if len(l.entries) != 0 {
+		fi = min(l.entries[0].Index, fi)
+	}
 	return fi
 }
 
