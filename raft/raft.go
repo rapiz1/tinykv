@@ -517,7 +517,7 @@ func (r *Raft) handleAppendEntriesResponse(m pb.Message) {
 	if m.Reject == true {
 		r.Prs[m.From].Next = m.Index
 		if r.Prs[m.From].Next <= 0 {
-			log.Panic("invalid match")
+			log.Panic(&m, "invalid match")
 		}
 		r.sendAppend(m.From)
 	} else {
@@ -571,6 +571,7 @@ func (r *Raft) rejectMessage(m pb.Message) {
 		From:    r.id,
 		To:      m.From,
 		Term:    r.Term,
+		Index:   r.RaftLog.LastIndex(),
 		Reject:  true,
 	})
 }
