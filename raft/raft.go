@@ -215,6 +215,10 @@ func (r *Raft) send(m pb.Message) {
 	r.msgs = append(r.msgs, m)
 }
 
+func (r *Raft) GetId() uint64 {
+	return r.id
+}
+
 func (r *Raft) sendSnapshot(to uint64) {
 	s, err := r.RaftLog.storage.Snapshot()
 	if err != nil {
@@ -303,11 +307,12 @@ func (r *Raft) tick() {
 			r.Step(pb.Message{
 				MsgType: pb.MessageType_MsgBeat,
 			})
-			r.votes[r.id] = true
 			if len(r.votes) < (len(r.Prs)+1)/2 {
+				log.Info("stale leader on leader")
 				r.becomeFollower(r.Term, 0)
 			} else {
 				r.votes = make(map[uint64]bool)
+				r.votes[r.id] = true
 			}
 		}
 	} else {
@@ -348,10 +353,6 @@ func (r *Raft) becomeCandidate() {
 	r.votes[r.id] = true
 	r.Vote = r.id
 	r.Lead = 0
-
-	if len(r.Prs) == 1 {
-		r.becomeLeader()
-	}
 }
 
 func (r *Raft) bcastRequstVote() {
@@ -362,13 +363,27 @@ func (r *Raft) bcastRequstVote() {
 	}
 }
 
+func (r *Raft) campaign() {
+	r.becomeCandidate()
+	if len(r.Prs) == 1 {
+		r.becomeLeader()
+	} else {
+		r.bcastRequstVote()
+	}
+}
+
 // becomeLeader transform this peer's state to leader
 func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
 	// NOTE: Leader should propose a noop entry on its term
+	log.Info(r.id, "become leader")
 	r.State = StateLeader
 	r.heartbeatElapsed = 0
 	r.votes = make(map[uint64]bool)
+	for to := range r.Prs {
+		r.votes[to] = true // avoid become follower at the first beat
+	}
+
 	r.Lead = r.id
 	for k := range r.Prs {
 		if k == r.id {
@@ -410,8 +425,7 @@ func (r *Raft) Step(m pb.Message) error {
 		case pb.MessageType_MsgHeartbeat:
 			r.handleHeartbeat(m)
 		case pb.MessageType_MsgHup:
-			r.becomeCandidate()
-			r.bcastRequstVote()
+			r.campaign()
 		case pb.MessageType_MsgRequestVote:
 			r.handleRequestVote(m)
 		case pb.MessageType_MsgAppend:
@@ -422,8 +436,7 @@ func (r *Raft) Step(m pb.Message) error {
 		case pb.MessageType_MsgHeartbeat:
 			r.handleHeartbeat(m)
 		case pb.MessageType_MsgHup:
-			r.becomeCandidate()
-			r.bcastRequstVote()
+			r.campaign()
 		case pb.MessageType_MsgRequestVoteResponse:
 			r.handleRequestVoteResponse(m)
 		case pb.MessageType_MsgAppend:
