@@ -451,6 +451,7 @@ func (r *Raft) Step(m pb.Message) error {
 			r.handleHeartbeat(m) // must reject
 		case pb.MessageType_MsgHeartbeatResponse:
 			r.handleHeartbeatResponse(m)
+			r.sendAppend(m.From)
 		case pb.MessageType_MsgAppend:
 			r.rejectMessage(m)
 		case pb.MessageType_MsgAppendResponse:
