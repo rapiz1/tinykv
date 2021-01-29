@@ -91,7 +91,12 @@ func newLog(storage Storage) *RaftLog {
 	}
 }
 
+const _sanityCheck = false
+
 func validateEntries(entries []pb.Entry) {
+	if _sanityCheck != true {
+		return
+	}
 	if len(entries) == 0 {
 		return
 	}
