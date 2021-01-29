@@ -192,11 +192,6 @@ func (l *RaftLog) Entries(lo, hi uint64) []pb.Entry {
 	if hi <= lo || lo > l.LastIndex() {
 		return ret
 	}
-	/*
-		if hi > l.LastIndex()+1 {
-			panic("entry slice out of bound")
-		}
-	*/
 	if lo < l.FirstIndex() {
 		t, err := l.Term(lo)
 		log.Info(t, err, l.entries)
