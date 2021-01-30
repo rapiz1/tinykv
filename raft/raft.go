@@ -140,6 +140,7 @@ type Raft struct {
 	// baseline of election interval
 	electionTimeout         int
 	originalElectionTimeout int
+
 	// number of ticks since it reached last heartbeatTimeout.
 	// only leader keeps heartbeatElapsed.
 	heartbeatElapsed int
@@ -147,6 +148,8 @@ type Raft struct {
 	// Number of ticks since it reached last electionTimeout or received a
 	// valid message from current leader when it is a follower.
 	electionElapsed int
+
+	transferElapsed int
 
 	// leadTransferee is id of the leader transfer target when its value is not zero.
 	// Follow the procedure defined in section 3.10 of Raft phd thesis.
@@ -217,6 +220,14 @@ func (r *Raft) send(m pb.Message) {
 
 func (r *Raft) GetId() uint64 {
 	return r.id
+}
+func (r *Raft) sendTimeoutNow(to uint64) {
+	r.send(pb.Message{
+		MsgType: pb.MessageType_MsgTimeoutNow,
+		From:    r.id,
+		To:      to,
+		Term:    r.Term,
+	})
 }
 
 func (r *Raft) sendSnapshot(to uint64) {
@@ -315,6 +326,13 @@ func (r *Raft) tick() {
 				r.votes[r.id] = true
 			}
 		}
+		if r.leadTransferee != 0 {
+			r.transferElapsed++
+			if r.transferElapsed >= 2*r.originalElectionTimeout {
+				r.leadTransferee = 0
+				r.transferElapsed = 0
+			}
+		}
 	} else {
 		r.electionElapsed++
 		if r.electionElapsed >= r.electionTimeout {
@@ -335,6 +353,7 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	r.State = StateFollower
 	r.Term = term
 	r.Lead = lead
+	r.leadTransferee = 0
 	r.Vote = lead
 	r.electionTimeout = r.originalElectionTimeout + rand.Intn(r.originalElectionTimeout)
 	r.electionElapsed = 0
@@ -353,6 +372,7 @@ func (r *Raft) becomeCandidate() {
 	r.votes[r.id] = true
 	r.Vote = r.id
 	r.Lead = 0
+	r.leadTransferee = 0
 }
 
 func (r *Raft) bcastRequstVote() {
@@ -384,6 +404,7 @@ func (r *Raft) becomeLeader() {
 	}
 
 	r.Lead = r.id
+	r.leadTransferee = 0
 	for k := range r.Prs {
 		if k == r.id {
 			r.Prs[k] = &Progress{r.RaftLog.LastIndex(), r.RaftLog.LastIndex() + 1}
@@ -397,11 +418,26 @@ func (r *Raft) becomeLeader() {
 	})
 }
 
+func (r *Raft) handleTimeoutNow(m pb.Message) {
+	if m.Term < r.Term {
+		return
+	}
+	r.Step(pb.Message{
+		MsgType: pb.MessageType_MsgHup,
+	})
+}
+
 // Step the entrance of handle message, see `MessageType`
 // on `eraftpb.proto` for what msgs should be handled
 func (r *Raft) Step(m pb.Message) error {
 	// Your Code Here (2A).
+	if _, ok := r.Prs[r.id]; !ok {
+		return nil
+	}
 	if !IsLocalMsg(m.MsgType) {
+		if _, ok := r.Prs[m.From]; !ok && m.From != 0 {
+			return nil
+		}
 		if m.Term < r.Term {
 			// should reject
 		} else if m.Term > r.Term {
@@ -429,6 +465,10 @@ func (r *Raft) Step(m pb.Message) error {
 			r.handleRequestVote(m)
 		case pb.MessageType_MsgAppend:
 			r.handleAppendEntries(m)
+		case pb.MessageType_MsgTimeoutNow:
+			r.handleTimeoutNow(m)
+		case pb.MessageType_MsgTransferLeader:
+			r.handleTransfer(m)
 		}
 	case StateCandidate:
 		switch m.MsgType {
@@ -442,6 +482,10 @@ func (r *Raft) Step(m pb.Message) error {
 			r.handleAppendEntries(m)
 		case pb.MessageType_MsgRequestVote:
 			r.handleRequestVote(m)
+		case pb.MessageType_MsgTimeoutNow:
+			r.handleTimeoutNow(m)
+		case pb.MessageType_MsgTransferLeader:
+			r.handleTransfer(m)
 		}
 	case StateLeader:
 		switch m.MsgType {
@@ -460,9 +504,25 @@ func (r *Raft) Step(m pb.Message) error {
 			r.handleRequestVote(m)
 		case pb.MessageType_MsgPropose:
 			r.handlePropose(m)
+		case pb.MessageType_MsgTransferLeader:
+			r.handleTransfer(m)
 		}
 	}
 	return nil
+}
+
+func (r *Raft) handleTransfer(m pb.Message) {
+	if r.State != StateLeader {
+		m.To = r.Lead
+		r.send(m)
+		return
+	}
+	if m.From == r.id {
+		return
+	}
+	r.leadTransferee = m.From
+	r.transferElapsed = 0
+	r.sendAppend(m.From)
 }
 
 func (r *Raft) handleBeat() {
@@ -510,6 +570,36 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	r.send(rsp)
 }
 
+func (r *Raft) maybeCommit() {
+	if r.State != StateLeader {
+		return
+	}
+	// Update commited
+	mr := make([]int, 0, len(r.Prs))
+	for _, v := range r.Prs {
+		mr = append(mr, int(v.Match))
+	}
+
+	sort.Slice(mr, func(i, j int) bool {
+		return mr[i] > mr[j]
+	})
+	commit := uint64(mr[len(mr)/2])
+	/*
+		if r.RaftLog.committed > commit {
+			fmt.Println(r.RaftLog.entries)
+			fmt.Println(m, mr, len(r.Prs), commit)
+			fmt.Println(r.RaftLog.committed, commit)
+			log.Panic("commit regression")
+		}
+	*/
+
+	currentTerm, _ := r.RaftLog.Term(commit)
+	if currentTerm == r.Term && commit > r.RaftLog.committed {
+		r.RaftLog.committed = commit
+		r.bcastAppend()
+	}
+}
+
 func (r *Raft) handleAppendEntriesResponse(m pb.Message) {
 	if m.Term < r.Term {
 		return
@@ -527,29 +617,10 @@ func (r *Raft) handleAppendEntriesResponse(m pb.Message) {
 		}
 		r.Prs[m.From].Match = m.Index
 		r.Prs[m.From].Next = m.Index + 1
-		// Update commited
-		mr := make([]int, 0, len(r.Prs))
-		for _, v := range r.Prs {
-			mr = append(mr, int(v.Match))
-		}
-
-		sort.Slice(mr, func(i, j int) bool {
-			return mr[i] > mr[j]
-		})
-		commit := uint64(mr[len(mr)/2])
-		/*
-			if r.RaftLog.committed > commit {
-				fmt.Println(r.RaftLog.entries)
-				fmt.Println(m, mr, len(r.Prs), commit)
-				fmt.Println(r.RaftLog.committed, commit)
-				log.Panic("commit regression")
-			}
-		*/
-
-		currentTerm, _ := r.RaftLog.Term(commit)
-		if currentTerm == r.Term && commit > r.RaftLog.committed {
-			r.RaftLog.committed = commit
-			r.bcastAppend()
+		r.maybeCommit()
+		if r.leadTransferee == m.From && r.Prs[m.From].Next == r.RaftLog.LastIndex()+1 {
+			r.sendTimeoutNow(m.From)
+			r.leadTransferee = 0
 		}
 	}
 }
@@ -578,9 +649,15 @@ func (r *Raft) rejectMessage(m pb.Message) {
 
 func (r *Raft) handlePropose(m pb.Message) {
 	//fmt.Println("propose change")
+	if r.leadTransferee != 0 {
+		return
+	}
 	for i, ent := range m.Entries {
 		ent.Index = r.RaftLog.LastIndex() + uint64(i) + 1
 		ent.Term = r.Term
+		if ent.EntryType == pb.EntryType_EntryConfChange {
+			r.PendingConfIndex = ent.Index
+		}
 	}
 	r.RaftLog.Append(m.Entries...)
 	r.Prs[r.id] = &Progress{r.RaftLog.LastIndex(), r.RaftLog.LastIndex() + 1}
@@ -712,9 +789,12 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 // addNode add a new node to raft group
 func (r *Raft) addNode(id uint64) {
 	// Your Code Here (3A).
+	r.Prs[id] = &Progress{0, r.RaftLog.LastIndex()}
 }
 
 // removeNode remove a node from raft group
 func (r *Raft) removeNode(id uint64) {
 	// Your Code Here (3A).
+	delete(r.Prs, id)
+	r.maybeCommit()
 }
