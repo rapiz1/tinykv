@@ -515,7 +515,7 @@ func (r *Raft) handleAppendEntriesResponse(m pb.Message) {
 		return
 	}
 	if m.Reject == true {
-		r.Prs[m.From].Next = m.Index
+		r.Prs[m.From].Next = max(m.Index, r.Prs[m.From].Match+1)
 		if r.Prs[m.From].Next <= 0 {
 			log.Panic(&m, "invalid match")
 		}
