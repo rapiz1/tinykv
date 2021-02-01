@@ -293,7 +293,7 @@ func (r *Raft) sendHeartbeat(to uint64) {
 		To:      to,
 		From:    r.id,
 		Term:    r.Term,
-		Commit:  r.RaftLog.committed,
+		//Commit:  r.RaftLog.committed,
 	})
 }
 
@@ -346,6 +346,10 @@ func (r *Raft) tick() {
 
 // becomeFollower transform this peer's state to Follower
 func (r *Raft) becomeFollower(term uint64, lead uint64) {
+	if r.State == StateLeader {
+		log.Debug(r.id, "become follower")
+		//debug.PrintStack()
+	}
 	// Your Code Here (2A).
 	if r.State == StateFollower && r.Term == term && r.Lead == lead {
 		return
@@ -394,6 +398,7 @@ func (r *Raft) campaign() {
 
 // becomeLeader transform this peer's state to leader
 func (r *Raft) becomeLeader() {
+	log.Debug(r.id, "become leader")
 	// Your Code Here (2A).
 	// NOTE: Leader should propose a noop entry on its term
 	r.State = StateLeader
@@ -431,13 +436,15 @@ func (r *Raft) handleTimeoutNow(m pb.Message) {
 // on `eraftpb.proto` for what msgs should be handled
 func (r *Raft) Step(m pb.Message) error {
 	// Your Code Here (2A).
-	if _, ok := r.Prs[r.id]; !ok {
+	if _, ok := r.Prs[r.id]; !ok && m.MsgType == pb.MessageType_MsgTimeoutNow {
 		return nil
 	}
 	if !IsLocalMsg(m.MsgType) {
-		if _, ok := r.Prs[m.From]; !ok && m.From != 0 {
-			return nil
-		}
+		/*
+			if _, ok := r.Prs[m.From]; !ok && m.From != 0 {
+				return nil
+			}
+		*/
 		if m.Term < r.Term {
 			// should reject
 		} else if m.Term > r.Term {
@@ -446,6 +453,7 @@ func (r *Raft) Step(m pb.Message) error {
 
 		if m.Commit > r.RaftLog.committed && m.From == r.Lead {
 			r.RaftLog.committed = min(m.Commit, r.RaftLog.LastIndex())
+			log.Debug(r.id, "commit", r.RaftLog.committed)
 		}
 	}
 
@@ -520,6 +528,10 @@ func (r *Raft) handleTransfer(m pb.Message) {
 	if m.From == r.id {
 		return
 	}
+	if _, ok := r.Prs[m.From]; !ok {
+		return
+	}
+
 	r.leadTransferee = m.From
 	r.transferElapsed = 0
 	r.sendAppend(m.From)
@@ -562,6 +574,13 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		r.RaftLog.Append(m.Entries...)
 		rsp.Index = r.RaftLog.LastIndex()
 
+		for _, e := range m.Entries {
+			if e.EntryType == pb.EntryType_EntryConfChange {
+				cc := &pb.ConfChange{}
+				cc.Unmarshal(e.Data)
+			}
+		}
+
 		if m.Commit > r.RaftLog.committed {
 			r.RaftLog.committed = min(m.Commit, m.Index+uint64(len(m.Entries)))
 		}
@@ -592,6 +611,7 @@ func (r *Raft) maybeCommit() {
 			log.Panic("commit regression")
 		}
 	*/
+	log.Debug(commit, mr)
 
 	currentTerm, _ := r.RaftLog.Term(commit)
 	if currentTerm == r.Term && commit > r.RaftLog.committed {
@@ -656,7 +676,16 @@ func (r *Raft) handlePropose(m pb.Message) {
 		ent.Index = r.RaftLog.LastIndex() + uint64(i) + 1
 		ent.Term = r.Term
 		if ent.EntryType == pb.EntryType_EntryConfChange {
-			r.PendingConfIndex = ent.Index
+			if len(m.Entries) != 1 {
+				log.Panic("long confchange")
+			}
+			if r.RaftLog.applied >= r.PendingConfIndex {
+				r.PendingConfIndex = ent.Index
+			} else {
+				// assume there's only one entry and it's confchange
+				log.Info("deny conf")
+				return
+			}
 		}
 	}
 	r.RaftLog.Append(m.Entries...)
@@ -718,6 +747,7 @@ func (r *Raft) handleRequestVoteResponse(m pb.Message) {
 // handleHeartbeat handle Heartbeat RPC request
 func (r *Raft) handleHeartbeat(m pb.Message) {
 	// Your Code Here (2A).
+	//log.Info(r.id, "<-", m.From)
 	if m.Term < r.Term {
 		r.rejectMessage(m)
 		return
@@ -789,12 +819,16 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 // addNode add a new node to raft group
 func (r *Raft) addNode(id uint64) {
 	// Your Code Here (3A).
-	r.Prs[id] = &Progress{0, r.RaftLog.LastIndex()}
+	log.Info(r.id, "add", id)
+	if _, ok := r.Prs[id]; !ok {
+		r.Prs[id] = &Progress{0, 1}
+	}
 }
 
 // removeNode remove a node from raft group
 func (r *Raft) removeNode(id uint64) {
 	// Your Code Here (3A).
 	delete(r.Prs, id)
+	log.Info(r.id, "remove", id)
 	r.maybeCommit()
 }
