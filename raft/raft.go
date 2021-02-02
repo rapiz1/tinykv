@@ -541,6 +541,11 @@ func (r *Raft) handleBeat() {
 	for to := range r.Prs {
 		if to != r.id {
 			r.sendHeartbeat(to)
+			/*
+				if r.Prs[to].Next == 1 {
+					r.sendSnapshot(to)
+				}
+			*/
 		}
 	}
 }
@@ -611,7 +616,7 @@ func (r *Raft) maybeCommit() {
 			log.Panic("commit regression")
 		}
 	*/
-	log.Debug(commit, mr)
+	log.Debug("commit:", commit, mr)
 
 	currentTerm, _ := r.RaftLog.Term(commit)
 	if currentTerm == r.Term && commit > r.RaftLog.committed {
@@ -725,12 +730,10 @@ func (r *Raft) handleRequestVote(m pb.Message) {
 	r.send(rsp)
 }
 
-func (r *Raft) handleRequestVoteResponse(m pb.Message) {
-	if m.Term < r.Term {
+func (r *Raft) maybeEndCampaign() {
+	if r.State != StateCandidate {
 		return
 	}
-
-	r.votes[m.From] = !m.Reject
 	count := 0
 	for _, v := range r.votes {
 		if v == true {
@@ -742,6 +745,15 @@ func (r *Raft) handleRequestVoteResponse(m pb.Message) {
 	} else if len(r.Prs)-len(r.votes)+count <= len(r.Prs)/2 {
 		r.becomeFollower(r.Term, 0)
 	}
+}
+
+func (r *Raft) handleRequestVoteResponse(m pb.Message) {
+	if m.Term < r.Term {
+		return
+	}
+
+	r.votes[m.From] = !m.Reject
+	r.maybeEndCampaign()
 }
 
 // handleHeartbeat handle Heartbeat RPC request
@@ -819,7 +831,7 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 // addNode add a new node to raft group
 func (r *Raft) addNode(id uint64) {
 	// Your Code Here (3A).
-	log.Info(r.id, "add", id)
+	log.Debug(r.id, "add", id)
 	if _, ok := r.Prs[id]; !ok {
 		r.Prs[id] = &Progress{0, 1}
 	}
@@ -829,6 +841,7 @@ func (r *Raft) addNode(id uint64) {
 func (r *Raft) removeNode(id uint64) {
 	// Your Code Here (3A).
 	delete(r.Prs, id)
-	log.Info(r.id, "remove", id)
+	log.Debug(r.id, "remove", id)
 	r.maybeCommit()
+	r.maybeEndCampaign()
 }
