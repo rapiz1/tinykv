@@ -80,8 +80,8 @@ func (d *peerMsgHandler) applyAdminRequest(ar *raft_cmdpb.AdminRequest, wb *engi
 			Index: ar.CompactLog.CompactIndex,
 			Term:  ar.CompactLog.CompactTerm,
 		}
-		d.ScheduleCompactLog(0, ar.CompactLog.CompactIndex)
 		wb.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState)
+		d.ScheduleCompactLog(ar.CompactLog.CompactIndex)
 	case raft_cmdpb.AdminCmdType_ChangePeer:
 		region := d.Region()
 		region.RegionEpoch.ConfVer++
