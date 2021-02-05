@@ -196,10 +196,9 @@ func newRaft(c *Config) *Raft {
 
 	raft.RaftLog.committed = hs.Commit
 
-	fi, _ := raft.RaftLog.storage.FirstIndex()
 	li := raft.RaftLog.LastIndex()
 	for _, v := range peers {
-		raft.Prs[v] = &Progress{fi - 1, li}
+		raft.Prs[v] = &Progress{0, li + 1}
 	}
 
 	if c.Applied != 0 {
