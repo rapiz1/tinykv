@@ -239,7 +239,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 		if partitions {
 			// Allow the clients to perform some operations without interruption
 			time.Sleep(300 * time.Millisecond)
-			go partitioner(t, cluster, ch_partitioner, &done_partitioner, unreliable, electionTimeout)
+			go partitioner(t, cluster, ch_partitioner, &done_partitioner, unreliable, 2*electionTimeout)
 		}
 		if confchange {
 			// Allow the clients to perfrom some operations without interruption
@@ -259,7 +259,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 			// has started.
 			cluster.ClearFilters()
 			// wait for a while so that we have a new term
-			time.Sleep(electionTimeout)
+			time.Sleep(2 * electionTimeout)
 		}
 
 		// log.Printf("wait for clients\n")
@@ -272,12 +272,14 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 			}
 			// Wait for a while for servers to shutdown, since
 			// shutdown isn't a real crash and isn't instantaneous
-			time.Sleep(electionTimeout)
+			time.Sleep(2 * electionTimeout)
 			log.Warnf("restart servers\n")
 			// crash and re-start all
 			for i := 1; i <= nservers; i++ {
 				cluster.StartServer(uint64(i))
 			}
+			// should wait for leader election
+			time.Sleep(2 * electionTimeout)
 		}
 
 		for cli := 0; cli < nclients; cli++ {
@@ -683,6 +685,16 @@ func TestOneSplit3B(t *testing.T) {
 	assert.NotNil(t, resp.GetHeader().GetError().GetKeyNotInRegion())
 
 	MustGetEqual(cluster.engines[5], []byte("k100"), []byte("v100"))
+}
+
+func TestSplit3B(t *testing.T) {
+	// Test: one client (3B) ...
+	GenericTest(t, "3B", 1, false, false, false, -1, false, true)
+}
+
+func TestSplitManyClients3B(t *testing.T) {
+	// Test: Many clients (3B) ...
+	GenericTest(t, "3B", 20, false, false, false, -1, false, true)
 }
 
 func TestSplitRecover3B(t *testing.T) {

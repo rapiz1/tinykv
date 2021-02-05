@@ -64,6 +64,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 			if !util.RegionEqual(applyResult.PrevRegion, applyResult.Region) {
 				storeMeta := d.ctx.storeMeta
 				storeMeta.Lock()
+				delete(storeMeta.regions, applyResult.PrevRegion.Id)
 				storeMeta.regions[applyResult.Region.Id] = applyResult.Region
 				storeMeta.regionRanges.Delete(&regionItem{region: applyResult.PrevRegion})
 				storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: applyResult.Region})
@@ -100,7 +101,14 @@ func (d *peerMsgHandler) HandleRaftReady() {
 }
 
 // apply a request to the state machine and generate a response
-func (d *peerMsgHandler) applyRequest(r *raft_cmdpb.Request, wb *engine_util.WriteBatch) []*raft_cmdpb.Response {
+func (d *peerMsgHandler) applyRequest(r *raft_cmdpb.Request, wb *engine_util.WriteBatch) ([]*raft_cmdpb.Response, error) {
+	key := getKey(r)
+	if key != nil {
+		if err := util.CheckKeyInRegion(key, d.Region()); err != nil {
+			return nil, err
+		}
+	}
+
 	switch r.CmdType {
 	case raft_cmdpb.CmdType_Get:
 	case raft_cmdpb.CmdType_Put:
@@ -132,10 +140,14 @@ func (d *peerMsgHandler) applyRequest(r *raft_cmdpb.Request, wb *engine_util.Wri
 		rrsp.Snap = &raft_cmdpb.SnapResponse{Region: d.Region()}
 	}
 
-	return []*raft_cmdpb.Response{rrsp}
+	return []*raft_cmdpb.Response{rrsp}, nil
 }
 
-func (d *peerMsgHandler) applyAdminRequest(ar *raft_cmdpb.AdminRequest, wb *engine_util.WriteBatch) *raft_cmdpb.AdminResponse {
+func (d *peerMsgHandler) applyAdminRequest(ar *raft_cmdpb.AdminRequest, wb *engine_util.WriteBatch) (*raft_cmdpb.AdminResponse, error) {
+	arsp := &raft_cmdpb.AdminResponse{
+		CmdType: ar.CmdType,
+	}
+
 	switch ar.CmdType {
 	case raft_cmdpb.AdminCmdType_CompactLog:
 		compactLog := ar.GetCompactLog()
@@ -148,23 +160,69 @@ func (d *peerMsgHandler) applyAdminRequest(ar *raft_cmdpb.AdminRequest, wb *engi
 			wb.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState)
 			d.ScheduleCompactLog(ar.CompactLog.CompactIndex)
 		}
+		arsp.CompactLog = &raft_cmdpb.CompactLogResponse{}
 	case raft_cmdpb.AdminCmdType_ChangePeer:
 		log.Panic("confChange shouldn't be here")
 	case raft_cmdpb.AdminCmdType_TransferLeader:
 		log.Panic("transferLeader shouldn't be here")
 	case raft_cmdpb.AdminCmdType_Split:
+		split := ar.Split
+
+		if err := util.CheckKeyInRegion(split.SplitKey, d.Region()); err != nil {
+			return nil, err
+		}
+
+		storeMeta := d.ctx.storeMeta
+		storeMeta.Lock()
+
+		region := d.Region()
+		storeMeta.regionRanges.Delete(&regionItem{region: region})
+
+		endKey := region.EndKey
+		region.EndKey = split.SplitKey
+		region.RegionEpoch.Version++
+		storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: region})
+
+		newRegion := &metapb.Region{
+			Id:       split.NewRegionId,
+			StartKey: split.SplitKey,
+			EndKey:   endKey,
+			Peers:    make([]*metapb.Peer, len(split.NewPeerIds)),
+			RegionEpoch: &metapb.RegionEpoch{
+				ConfVer: InitEpochConfVer,
+				Version: region.RegionEpoch.Version,
+			},
+		}
+
+		for i := range newRegion.Peers {
+			newRegion.Peers[i] = &metapb.Peer{Id: split.NewPeerIds[i], StoreId: region.Peers[i].StoreId}
+		}
+
+		storeMeta.regions[newRegion.Id] = newRegion
+		storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: newRegion})
+
+		storeMeta.Unlock()
+
+		meta.WriteRegionState(wb, region, rspb.PeerState_Normal)
+		meta.WriteRegionState(wb, newRegion, rspb.PeerState_Normal)
+		d.SizeDiffHint = 0
+		d.ApproximateSize = nil
+
+		peer, err := createPeer(d.ctx.store.Id, d.ctx.cfg, d.ctx.regionTaskSender, d.ctx.engine, newRegion)
+		if err != nil {
+			panic(err)
+		}
+		d.ctx.router.register(peer)
+		d.ctx.router.send(newRegion.Id, message.Msg{Type: message.MsgTypeStart})
+
+		if d.IsLeader() {
+			d.HeartbeatScheduler(d.ctx.schedulerTaskSender)
+		}
+
+		arsp.Split = &raft_cmdpb.SplitResponse{Regions: []*metapb.Region{newRegion}}
 	}
 
-	arsp := &raft_cmdpb.AdminResponse{
-		CmdType: ar.CmdType,
-	}
-	switch ar.CmdType {
-	case raft_cmdpb.AdminCmdType_CompactLog:
-		arsp.CompactLog = &raft_cmdpb.CompactLogResponse{}
-	case raft_cmdpb.AdminCmdType_Split:
-	}
-
-	return arsp
+	return arsp, nil
 }
 
 func (d *peerMsgHandler) proposalRespond(rsp *raft_cmdpb.RaftCmdResponse, e *eraftpb.Entry) {
@@ -214,13 +272,21 @@ func (d *peerMsgHandler) process(e *eraftpb.Entry, wb *engine_util.WriteBatch) *
 		Header: &raft_cmdpb.RaftResponseHeader{},
 	}
 
+	if err := util.CheckRegionEpoch(cmd, d.Region(), true); err != nil {
+		return ErrResp(err)
+	}
+
 	if r != nil {
-		rsp.Responses = d.applyRequest(r, wb)
+		rsp.Responses, err = d.applyRequest(r, wb)
 	} else if ar != nil {
-		rsp.AdminResponse = d.applyAdminRequest(ar, wb)
+		rsp.AdminResponse, err = d.applyAdminRequest(ar, wb)
 	} else {
 		// noop entry
 		return nil
+	}
+
+	if err != nil {
+		rsp = ErrResp(err)
 	}
 
 	return rsp
@@ -241,10 +307,9 @@ func (d *peerMsgHandler) processConfChange(e *eraftpb.Entry, wb *engine_util.Wri
 
 	region := d.Region()
 
-	err = util.CheckRegionEpoch(msg, region, true)
-	if errEpochNotMatching, ok := err.(*util.ErrEpochNotMatch); ok {
+	if err = util.CheckRegionEpoch(msg, region, true); err != nil {
 		log.Info("stale confchange")
-		rsp := ErrResp(errEpochNotMatching)
+		rsp := ErrResp(err)
 		return rsp
 	}
 
@@ -407,6 +472,19 @@ func (d *peerMsgHandler) proposeChangePeer(msg *raft_cmdpb.RaftCmdRequest, cb *m
 	d.RaftGroup.ProposeConfChange(cc)
 }
 
+func getKey(r *raft_cmdpb.Request) []byte {
+	var key []byte
+	switch r.CmdType {
+	case raft_cmdpb.CmdType_Get:
+		key = r.Get.Key
+	case raft_cmdpb.CmdType_Put:
+		key = r.Put.Key
+	case raft_cmdpb.CmdType_Delete:
+		key = r.Delete.Key
+	}
+	return key
+}
+
 func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *message.Callback) {
 	err := d.preProposeRaftCommand(msg)
 	if err != nil {
@@ -422,6 +500,22 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		case raft_cmdpb.AdminCmdType_ChangePeer:
 			d.proposeChangePeer(msg, cb)
 			return
+		case raft_cmdpb.AdminCmdType_Split:
+			if err := util.CheckKeyInRegion(msg.AdminRequest.Split.SplitKey, d.Region()); err != nil {
+				cb.Done(ErrResp(err))
+				return
+			}
+		}
+	}
+
+	if len(msg.Requests) > 0 {
+		r := msg.Requests[0]
+		key := getKey(r)
+		if key != nil {
+			if err := util.CheckKeyInRegion(key, d.Region()); err != nil {
+				cb.Done(ErrResp(err))
+				return
+			}
 		}
 	}
 
