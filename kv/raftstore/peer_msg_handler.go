@@ -2,7 +2,6 @@ package raftstore
 
 import (
 	"fmt"
-	"sort"
 	"time"
 
 	"github.com/Connor1996/badger/y"
@@ -71,6 +70,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 				storeMeta.Unlock()
 			}
 		}
+		defer d.Send(d.ctx.trans, ready.Messages)
 		for _, e := range ready.CommittedEntries {
 			d.debug(&e)
 			wb := &engine_util.WriteBatch{}
@@ -95,7 +95,6 @@ func (d *peerMsgHandler) HandleRaftReady() {
 			}
 			d.debug(&e)
 		}
-		d.Send(d.ctx.trans, ready.Messages)
 		d.RaftGroup.Advance(ready)
 	}
 }
@@ -268,6 +267,10 @@ func (d *peerMsgHandler) processConfChange(e *eraftpb.Entry, wb *engine_util.Wri
 	case eraftpb.ConfChangeType_AddNode:
 		if peerIdx == -1 {
 			region.Peers = append(region.Peers, ar.ChangePeer.Peer)
+
+			/* This is undocumented and I don't know why it's needed here. Otherwise
+			 * it will fail TestBasicConfChange because of unmatched store.
+			 */
 			d.insertPeerCache(ar.ChangePeer.Peer)
 			changed = true
 		}
@@ -279,7 +282,7 @@ func (d *peerMsgHandler) processConfChange(e *eraftpb.Entry, wb *engine_util.Wri
 			// remove idx from peers
 			if peerIdx != -1 {
 				region.Peers = append(region.Peers[:peerIdx], region.Peers[peerIdx+1:]...)
-				d.removePeerCache(peerId)
+				d.removePeerCache(peerId) // See comments above
 				changed = true
 			}
 		}
@@ -420,18 +423,6 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		case raft_cmdpb.AdminCmdType_ChangePeer:
 			d.proposeChangePeer(msg, cb)
 			return
-		}
-	}
-
-	if len(d.proposals) > 0 {
-		n := len(d.proposals)
-		idx := sort.Search(n, func(i int) bool { return d.proposals[i].index >= d.nextProposalIndex() })
-		if idx < n {
-			for i := idx; i < n; i++ {
-				pi := d.proposals[i]
-				pi.cb.Done(ErrRespStaleCommand(pi.term))
-			}
-			d.proposals = d.proposals[:idx]
 		}
 	}
 
