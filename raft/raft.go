@@ -792,13 +792,9 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 		r.rejectMessage(m)
 		return
 	}
-	if m.Index < r.RaftLog.committed {
-		r.rejectMessage(m)
-		return
-	}
 	s := m.Snapshot
 	sm := s.Metadata
-	r.becomeFollower(max(r.Term, sm.Term), m.From)
+	r.becomeFollower(m.Term, m.From)
 	r.RaftLog.entries = r.RaftLog.entries[:0]
 	r.RaftLog.committed = sm.Index
 	r.RaftLog.applied = sm.Index
@@ -808,7 +804,7 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 		if uint64(peer) == r.id {
 			r.Prs[uint64(peer)] = &Progress{r.RaftLog.LastIndex(), r.RaftLog.LastIndex() + 1}
 		} else {
-			r.Prs[uint64(peer)] = &Progress{sm.Index, r.RaftLog.LastIndex() + 1}
+			r.Prs[uint64(peer)] = &Progress{0, r.RaftLog.LastIndex() + 1}
 		}
 	}
 	r.RaftLog.pendingSnapshot = s
