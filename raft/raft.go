@@ -415,6 +415,7 @@ func (r *Raft) becomeLeader() {
 			r.Prs[k] = &Progress{r.RaftLog.LastIndex(), r.RaftLog.LastIndex() + 1}
 		} else {
 			r.Prs[k].Next = r.RaftLog.LastIndex() + 1
+			r.Prs[k].Match = 0
 		}
 	}
 	r.Step(pb.Message{
@@ -566,7 +567,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		MsgType: pb.MessageType_MsgAppendResponse,
 		To:      m.From,
 		From:    r.id,
-		Index:   m.Index,
+		Index:   min(m.Index, r.RaftLog.LastIndex()+1),
 		Term:    r.Term,
 		Reject:  m.Term < r.Term,
 	}
@@ -578,13 +579,6 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	} else {
 		r.RaftLog.Append(m.Entries...)
 		rsp.Index = r.RaftLog.LastIndex()
-
-		for _, e := range m.Entries {
-			if e.EntryType == pb.EntryType_EntryConfChange {
-				cc := &pb.ConfChange{}
-				cc.Unmarshal(e.Data)
-			}
-		}
 
 		if m.Commit > r.RaftLog.committed {
 			r.RaftLog.committed = min(m.Commit, m.Index+uint64(len(m.Entries)))
