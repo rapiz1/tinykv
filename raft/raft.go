@@ -318,13 +318,15 @@ func (r *Raft) tick() {
 			r.Step(pb.Message{
 				MsgType: pb.MessageType_MsgBeat,
 			})
-			if len(r.votes) < (len(r.Prs)+1)/2 {
-				log.Info("stale leader on leader")
-				r.becomeFollower(r.Term, 0)
-			} else {
-				r.votes = make(map[uint64]bool)
-				r.votes[r.id] = true
-			}
+			/*
+				if len(r.votes) < (len(r.Prs)+1)/2 {
+					log.Info("stale leader on leader")
+					r.becomeFollower(r.Term, 0)
+				} else {
+					r.votes = make(map[uint64]bool)
+					r.votes[r.id] = true
+				}
+			*/
 		}
 		if r.leadTransferee != 0 {
 			r.transferElapsed++
@@ -825,8 +827,8 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 // addNode add a new node to raft group
 func (r *Raft) addNode(id uint64) {
 	// Your Code Here (3A).
-	log.Debug(r.id, "add", id)
 	if _, ok := r.Prs[id]; !ok {
+		log.Debug(r.id, "add", id)
 		r.Prs[id] = &Progress{0, 1}
 	}
 }
@@ -834,8 +836,10 @@ func (r *Raft) addNode(id uint64) {
 // removeNode remove a node from raft group
 func (r *Raft) removeNode(id uint64) {
 	// Your Code Here (3A).
-	delete(r.Prs, id)
-	log.Debug(r.id, "remove", id)
-	r.maybeCommit()
-	r.maybeEndCampaign()
+	if _, ok := r.Prs[id]; ok {
+		log.Debug(r.id, "remove", id)
+		delete(r.Prs, id)
+		r.maybeCommit()
+		r.maybeEndCampaign()
+	}
 }

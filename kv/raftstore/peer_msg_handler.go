@@ -72,7 +72,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		}
 		defer d.Send(d.ctx.trans, ready.Messages)
 		for _, e := range ready.CommittedEntries {
-			d.debug(&e)
+			//d.debug(&e)
 			wb := &engine_util.WriteBatch{}
 			var rsp *raft_cmdpb.RaftCmdResponse
 			if e.EntryType == eraftpb.EntryType_EntryNormal {
@@ -93,7 +93,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 			if rsp != nil {
 				d.proposalRespond(rsp, &e)
 			}
-			d.debug(&e)
+			//d.debug(&e)
 		}
 		d.RaftGroup.Advance(ready)
 	}
@@ -106,7 +106,6 @@ func (d *peerMsgHandler) applyRequest(r *raft_cmdpb.Request, wb *engine_util.Wri
 	case raft_cmdpb.CmdType_Put:
 		wb.SetCF(r.Put.Cf, r.Put.Key, r.Put.Value)
 		log.Debug(d.PeerId(), "put", r.Put.Cf, r.Put.Key, r.Put.Value)
-		log.Debug(d.PeerId(), "store", d.storeID(), "engines", d.peerStorage.Engines)
 	case raft_cmdpb.CmdType_Delete:
 		wb.DeleteCF(r.Delete.Cf, r.Delete.Key)
 		log.Debug(d.PeerId(), "delete", r.Delete.Cf, r.Delete.Key)
@@ -294,10 +293,10 @@ func (d *peerMsgHandler) processConfChange(e *eraftpb.Entry, wb *engine_util.Wri
 		storeMeta.Lock()
 		storeMeta.regions[region.Id] = region
 		storeMeta.Unlock()
-		d.RaftGroup.ApplyConfChange(cc)
 		meta.WriteRegionState(wb, d.Region(), raft_serverpb.PeerState_Normal)
 	}
 
+	d.RaftGroup.ApplyConfChange(cc)
 	if d.IsLeader() {
 		d.HeartbeatScheduler(d.ctx.schedulerTaskSender)
 	}
@@ -305,9 +304,9 @@ func (d *peerMsgHandler) processConfChange(e *eraftpb.Entry, wb *engine_util.Wri
 	return &raft_cmdpb.RaftCmdResponse{
 		Header: &raft_cmdpb.RaftResponseHeader{},
 		AdminResponse: &raft_cmdpb.AdminResponse{
-			CmdType:    raft_cmdpb.AdminCmdType_ChangePeer,
+			CmdType: raft_cmdpb.AdminCmdType_ChangePeer,
 			ChangePeer: &raft_cmdpb.ChangePeerResponse{
-				//Region: d.Region(),
+				Region: d.Region(),
 			},
 		},
 	}
