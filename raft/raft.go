@@ -317,15 +317,14 @@ func (r *Raft) tick() {
 			r.Step(pb.Message{
 				MsgType: pb.MessageType_MsgBeat,
 			})
-			/*
-				if len(r.votes) < (len(r.Prs)+1)/2 {
-					log.Info("stale leader on leader")
-					r.becomeFollower(r.Term, 0)
-				} else {
-					r.votes = make(map[uint64]bool)
-					r.votes[r.id] = true
-				}
-			*/
+			r.votes[r.id] = true
+			if len(r.votes) > len(r.Prs)/2 {
+				r.votes = make(map[uint64]bool)
+				r.votes[r.id] = true
+			} else {
+				log.Info("stale leader on leader")
+				r.becomeFollower(r.Term, 0)
+			}
 		}
 		if r.leadTransferee != 0 {
 			r.transferElapsed++
