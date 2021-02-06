@@ -176,7 +176,6 @@ func (rn *RawNode) Ready() Ready {
 
 	if !IsEmptySnap(rn.Raft.RaftLog.pendingSnapshot) {
 		ready.Snapshot = *rn.Raft.RaftLog.pendingSnapshot
-		rn.Raft.RaftLog.pendingSnapshot = nil
 	}
 
 	return ready
@@ -228,6 +227,10 @@ func (rn *RawNode) Advance(rd Ready) {
 	if len(rd.Entries) != 0 {
 		rn.Raft.RaftLog.stabled += uint64(len(rd.Entries))
 	}
+	if !IsEmptySnap(rn.Raft.RaftLog.pendingSnapshot) {
+		rn.Raft.RaftLog.pendingSnapshot = nil
+	}
+
 	rn.Raft.msgs = rn.Raft.msgs[0:0]
 	rn.Raft.RaftLog.maybeCompact()
 }
