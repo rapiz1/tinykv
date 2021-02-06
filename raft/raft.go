@@ -691,7 +691,7 @@ func (r *Raft) handlePropose(m pb.Message) {
 	r.Prs[r.id] = &Progress{r.RaftLog.LastIndex(), r.RaftLog.LastIndex() + 1}
 	r.bcastAppend()
 	if len(r.Prs) == 1 {
-		r.RaftLog.committed++
+		r.RaftLog.committed = r.RaftLog.LastIndex()
 	}
 }
 
@@ -834,6 +834,9 @@ func (r *Raft) removeNode(id uint64) {
 		log.Debug(r.id, "remove", id)
 		delete(r.Prs, id)
 		r.maybeCommit()
-		r.maybeEndCampaign()
+		if r.State == StateCandidate {
+			log.Panic("not here")
+			r.maybeEndCampaign()
+		}
 	}
 }
