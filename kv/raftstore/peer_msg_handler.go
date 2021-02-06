@@ -2,6 +2,7 @@ package raftstore
 
 import (
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/Connor1996/badger/y"
@@ -232,20 +233,31 @@ func (d *peerMsgHandler) proposalRespond(rsp *raft_cmdpb.RaftCmdResponse, e *era
 	if rsp == nil {
 		log.Panic("rsp is nil")
 	}
-	p := d.proposals[0]
-	if p.index == e.Index {
-		if p.term == e.Term {
-			if rsp.Responses != nil && len(rsp.Responses) > 0 {
-				if rsp.Responses[0].CmdType == raft_cmdpb.CmdType_Snap {
-					p.cb.Txn = d.peerStorage.Engines.Kv.NewTransaction(false)
-				}
-			}
-			p.cb.Done(rsp)
-		} else {
-			p.cb.Done(ErrRespStaleCommand(p.term))
+	var p *proposal
+	var idx int
+	for i, v := range d.proposals {
+		if v.index == e.Index {
+			p = v
+			idx = i
+			break
 		}
 	}
-	d.proposals = d.proposals[1:]
+	if p == nil {
+		return
+	}
+
+	if p.term == e.Term {
+		if rsp.Responses != nil && len(rsp.Responses) > 0 {
+			if rsp.Responses[0].CmdType == raft_cmdpb.CmdType_Snap {
+				p.cb.Txn = d.peerStorage.Engines.Kv.NewTransaction(false)
+			}
+		}
+		p.cb.Done(rsp)
+	} else {
+		p.cb.Done(ErrRespStaleCommand(e.Term))
+	}
+
+	d.proposals = append(d.proposals[:idx], d.proposals[idx+1:]...)
 }
 
 func (d *peerMsgHandler) process(e *eraftpb.Entry, wb *engine_util.WriteBatch) *raft_cmdpb.RaftCmdResponse {
@@ -464,8 +476,22 @@ func (d *peerMsgHandler) proposeChangePeer(msg *raft_cmdpb.RaftCmdRequest, cb *m
 		Context:    data,
 	}
 	log.Debug("propose", cc)
+
+	nextIdx := d.nextProposalIndex()
+	if len(d.proposals) > 0 {
+		n := len(d.proposals)
+		idx := sort.Search(n, func(i int) bool { return d.proposals[i].index >= nextIdx })
+		if idx < n {
+			for i := idx; i < n; i++ {
+				pi := d.proposals[i]
+				pi.cb.Done(ErrRespStaleCommand(pi.term))
+			}
+			d.proposals = d.proposals[:idx]
+		}
+	}
+
 	d.proposals = append(d.proposals, &proposal{
-		index: d.nextProposalIndex(),
+		index: nextIdx,
 		term:  d.Term(),
 		cb:    cb,
 	})
@@ -524,8 +550,21 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		panic(err)
 	}
 
+	nextIdx := d.nextProposalIndex()
+	if len(d.proposals) > 0 {
+		n := len(d.proposals)
+		idx := sort.Search(n, func(i int) bool { return d.proposals[i].index >= nextIdx })
+		if idx < n {
+			for i := idx; i < n; i++ {
+				pi := d.proposals[i]
+				pi.cb.Done(ErrRespStaleCommand(pi.term))
+			}
+			d.proposals = d.proposals[:idx]
+		}
+	}
+
 	d.proposals = append(d.proposals, &proposal{
-		index: d.nextProposalIndex(),
+		index: nextIdx,
 		term:  d.Term(),
 		cb:    cb,
 	})
