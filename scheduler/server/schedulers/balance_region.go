@@ -14,6 +14,8 @@
 package schedulers
 
 import (
+	"sort"
+
 	"github.com/pingcap-incubator/tinykv/scheduler/server/core"
 	"github.com/pingcap-incubator/tinykv/scheduler/server/schedule"
 	"github.com/pingcap-incubator/tinykv/scheduler/server/schedule/operator"
@@ -77,6 +79,81 @@ func (s *balanceRegionScheduler) IsScheduleAllowed(cluster opt.Cluster) bool {
 
 func (s *balanceRegionScheduler) Schedule(cluster opt.Cluster) *operator.Operator {
 	// Your Code Here (3C).
+	maxDownTime := cluster.GetMaxStoreDownTime()
 
-	return nil
+	// Get all suitable stores
+	stores := []*core.StoreInfo{}
+	for _, v := range cluster.GetStores() {
+		if v.IsUp() && v.DownTime() <= maxDownTime {
+			stores = append(stores, v)
+		}
+	}
+	sort.Slice(stores, func(i, j int) bool {
+		return stores[i].GetRegionSize() > stores[j].GetRegionSize()
+	})
+	if len(stores) == 0 {
+		return nil
+	}
+
+	// Find a region from suitable fromStore
+	var oldStore, newStore *core.StoreInfo
+	var region *core.RegionInfo
+	for _, s := range stores {
+		sel := func(rc core.RegionsContainer) {
+			region = rc.RandomRegion(nil, nil)
+		}
+		cluster.GetPendingRegionsWithLock(s.GetID(), sel)
+		if region != nil {
+			oldStore = s
+			break
+		}
+		cluster.GetFollowersWithLock(s.GetID(), sel)
+		if region != nil {
+			oldStore = s
+			break
+		}
+		cluster.GetLeadersWithLock(s.GetID(), sel)
+		if region != nil {
+			oldStore = s
+			break
+		}
+	}
+	if region == nil {
+		return nil
+	}
+
+	// Get all stores that contain this region
+	storeIds := region.GetStoreIds()
+	if len(storeIds) < cluster.GetMaxReplicas() {
+		return nil
+	}
+
+	// Find a newStore
+	for i := len(stores) - 1; i >= 0 && stores[i] != oldStore; i-- {
+		if _, ok := storeIds[stores[i].GetID()]; !ok {
+			newStore = stores[i]
+			break
+		}
+	}
+
+	if newStore == nil {
+		return nil
+	}
+
+	// If this is valuable
+	if oldStore.GetRegionSize()-newStore.GetRegionSize() <= 2*region.GetApproximateSize() {
+		return nil
+	}
+
+	peer, err := cluster.AllocPeer(newStore.GetID())
+	if err != nil {
+		return nil
+	}
+
+	op, err := operator.CreateMovePeerOperator("move peer", cluster, region, operator.OpBalance, oldStore.GetID(), newStore.GetID(), peer.Id)
+	if err != nil {
+		return nil
+	}
+
+	return op
 }
