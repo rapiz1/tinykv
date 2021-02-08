@@ -50,6 +50,7 @@ func (d *peerMsgHandler) debug(e *eraftpb.Entry) {
 	}
 	log.Debug(d.PeerId(), "applied", e.Index, "raft", raftState)
 }
+
 func (d *peerMsgHandler) HandleRaftReady() {
 	if d.stopped {
 		return
@@ -72,6 +73,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 				storeMeta.Unlock()
 			}
 		}
+		// Msgs should be sent only after entries are stablized and commited
 		defer d.Send(d.ctx.trans, ready.Messages)
 		for _, e := range ready.CommittedEntries {
 			//d.debug(&e)
@@ -101,7 +103,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	}
 }
 
-// apply a request to the state machine and generate a response
+// Apply a normal request to the state machine and generate a response
 func (d *peerMsgHandler) applyRequest(r *raft_cmdpb.Request, wb *engine_util.WriteBatch) ([]*raft_cmdpb.Response, error) {
 	key := getKey(r)
 	if key != nil {
@@ -144,6 +146,7 @@ func (d *peerMsgHandler) applyRequest(r *raft_cmdpb.Request, wb *engine_util.Wri
 	return []*raft_cmdpb.Response{rrsp}, nil
 }
 
+// Apply an admin request to the state machine and generate a response
 func (d *peerMsgHandler) applyAdminRequest(ar *raft_cmdpb.AdminRequest, wb *engine_util.WriteBatch) (*raft_cmdpb.AdminResponse, error) {
 	arsp := &raft_cmdpb.AdminResponse{
 		CmdType: ar.CmdType,
@@ -226,6 +229,7 @@ func (d *peerMsgHandler) applyAdminRequest(ar *raft_cmdpb.AdminRequest, wb *engi
 	return arsp, nil
 }
 
+// Try to find a proposal to respond with
 func (d *peerMsgHandler) proposalRespond(rsp *raft_cmdpb.RaftCmdResponse, e *eraftpb.Entry) {
 	if len(d.proposals) == 0 {
 		return
@@ -260,6 +264,7 @@ func (d *peerMsgHandler) proposalRespond(rsp *raft_cmdpb.RaftCmdResponse, e *era
 	d.proposals = append(d.proposals[:idx], d.proposals[idx+1:]...)
 }
 
+// Process an normal entry and apply the contained request
 func (d *peerMsgHandler) process(e *eraftpb.Entry, wb *engine_util.WriteBatch) *raft_cmdpb.RaftCmdResponse {
 	cmd := &raft_cmdpb.RaftCmdRequest{}
 	err := cmd.Unmarshal(e.Data)
@@ -304,6 +309,7 @@ func (d *peerMsgHandler) process(e *eraftpb.Entry, wb *engine_util.WriteBatch) *
 	return rsp
 }
 
+// Process a confChange entry
 func (d *peerMsgHandler) processConfChange(e *eraftpb.Entry, wb *engine_util.WriteBatch) *raft_cmdpb.RaftCmdResponse {
 	cc := eraftpb.ConfChange{}
 	err := cc.Unmarshal(e.Data)
@@ -451,6 +457,7 @@ func (d *peerMsgHandler) preProposeRaftCommand(req *raft_cmdpb.RaftCmdRequest) e
 	return err
 }
 
+// Propose a trasnferLeader entry
 func (d *peerMsgHandler) proposeTransferLeader(msg *raft_cmdpb.RaftCmdRequest, cb *message.Callback) {
 	d.RaftGroup.TransferLeader(msg.AdminRequest.TransferLeader.Peer.Id)
 	cb.Done(&raft_cmdpb.RaftCmdResponse{
@@ -462,6 +469,7 @@ func (d *peerMsgHandler) proposeTransferLeader(msg *raft_cmdpb.RaftCmdRequest, c
 	})
 }
 
+// Propose a ChangePeer entry
 func (d *peerMsgHandler) proposeChangePeer(msg *raft_cmdpb.RaftCmdRequest, cb *message.Callback) {
 	if d.RaftGroup.Raft.PendingConfIndex > d.peerStorage.AppliedIndex() {
 		return
@@ -498,6 +506,7 @@ func (d *peerMsgHandler) proposeChangePeer(msg *raft_cmdpb.RaftCmdRequest, cb *m
 	d.RaftGroup.ProposeConfChange(cc)
 }
 
+// Return the key of the normal request
 func getKey(r *raft_cmdpb.Request) []byte {
 	var key []byte
 	switch r.CmdType {
@@ -518,15 +527,20 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		return
 	}
 	// Your Code Here (2B).
+
+	// Handle two special cases for proposing requests
 	if msg.AdminRequest != nil {
 		switch msg.AdminRequest.CmdType {
 		case raft_cmdpb.AdminCmdType_TransferLeader:
+			// No need to propose a data entry
 			d.proposeTransferLeader(msg, cb)
 			return
 		case raft_cmdpb.AdminCmdType_ChangePeer:
+			// Propose a confChange entry, instead of a normal one
 			d.proposeChangePeer(msg, cb)
 			return
 		case raft_cmdpb.AdminCmdType_Split:
+			// Just a check
 			if err := util.CheckKeyInRegion(msg.AdminRequest.Split.SplitKey, d.Region()); err != nil {
 				cb.Done(ErrResp(err))
 				return
@@ -550,6 +564,7 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		panic(err)
 	}
 
+	// Clean up any stale proposals with conflicting indexes, just like truncating logs
 	nextIdx := d.nextProposalIndex()
 	if len(d.proposals) > 0 {
 		n := len(d.proposals)
