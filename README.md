@@ -1,3 +1,27 @@
+# Submission
+
+This is my submission for PingCap TalentPlan TinyKV course. You can find more about me on [my GitHub homepage](https://github.com/Rapiz1).
+
+## Correctness
+
+I tried my best to complete the project, but still failed to pass some tests of 3B splitting. All other tests should pass.
+
+## Contribution
+
+I encounterd some issues when learning this course and actively seeked to fix them, finally getting 8 pull requests merged. [Most are trival.](https://github.com/tidb-incubator/tinykv/pulls?q=is%3Apr+author%3ARapiz1)
+
+## Attention
+
+Due to [tinykv#217](https://github.com/tidb-incubator/tinykv/issues/217), this program may block forever on many Linux distros e.g. Arch Linux. Make sure `/tmp` is not mounted on tmpfs.
+
+I personally use a modified version of directio to work around this issue.
+
+Steps:
+
+- Go to `GOPATH`
+- Find `pkg/mod/github.com/ncw/directio@v1.0.4/`, the specified version may vary.
+- Edit `direct_io_unix.go` and remove O_DIRECT from flags.
+
 # The TinyKV Course
 
 This is a series of projects on a key-value storage system built with the Raft consensus algorithm. These projects are inspired by the famous [MIT 6.824](http://nil.csail.mit.edu/6.824/2018/index.html) course, but aim to be closer to industry implementations. The whole course is pruned from [TiKV](https://github.com/tikv/tikv) and re-written in Go. After completing this course, you will have the knowledge to implement a horizontal scalable, high available, key-value storage service with distributed transaction support and a better understanding of TiKV implementation.
@@ -28,7 +52,7 @@ Also, you’d better read the overview design of TiKV and PD to get a general im
 
 First, please clone the repository with git to get the source code of the project.
 
-``` bash
+```bash
 git clone https://github.com/pingcap-incubator/tinykv.git
 ```
 
@@ -47,7 +71,7 @@ The whole project is organized into the following directories:
 - `proto`: all communication between nodes and processes uses Protocol Buffers over gRPC. This package contains the protocol definitions used by TinyKV, and generated Go code for using them.
 - `raft`: implementation of the Raft distributed consensus algorithm, used in TinyKV.
 - `scheduler`: implementation of the TinyScheduler which is responsible for managing TinyKV nodes and for generating timestamps.
-- `log`: log utility to output log base	on level.
+- `log`: log utility to output log base on level.
 
 ### Course material
 
