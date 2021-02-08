@@ -93,6 +93,7 @@ func newLog(storage Storage) *RaftLog {
 
 const _sanityCheck = false
 
+// Helper function for checking entries
 func validateEntries(entries []pb.Entry) {
 	if _sanityCheck != true {
 		return
@@ -122,10 +123,6 @@ func (l *RaftLog) maybeCompact() {
 	l.entries = l.entries[idx:]
 }
 
-func (l *RaftLog) convertIdx(i int) int {
-	return i - int(l.entries[0].Index)
-}
-
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
@@ -153,6 +150,7 @@ func (l *RaftLog) LastIndex() uint64 {
 	return idx
 }
 
+// FirstIndex returns the first index in the storage or the memory, ignoring the pending snapshot
 func (l *RaftLog) FirstIndex() uint64 {
 	fi, _ := l.storage.FirstIndex()
 	if len(l.entries) != 0 {
@@ -181,12 +179,13 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 	return l.storage.Term(i)
 }
 
+// LastTerm returns the term of the last entry in the log
 func (l *RaftLog) LastTerm() uint64 {
 	t, _ := l.Term(l.LastIndex())
 	return t
 }
 
-// [lo, hi)
+// Entries return [lo, hi) entries in the log. It uses memory prior to the storage
 func (l *RaftLog) Entries(lo, hi uint64) []pb.Entry {
 	ret := make([]pb.Entry, 0)
 	if hi <= lo || lo > l.LastIndex() {
@@ -236,6 +235,7 @@ func (l *RaftLog) Entries(lo, hi uint64) []pb.Entry {
 	return ret
 }
 
+// EntriesWithPointers returns the same elements as Entries, but as pointers
 func (l *RaftLog) EntriesWithPointers(lo, hi uint64) []*pb.Entry {
 	e := l.Entries(lo, hi)
 	ents := make([]*pb.Entry, 0)
@@ -245,6 +245,8 @@ func (l *RaftLog) EntriesWithPointers(lo, hi uint64) []*pb.Entry {
 	return ents
 }
 
+// Append insert entries into the log. If some of the given entries already in
+// the memory, it will skip those. Inserted entries may truncate the log.
 func (l *RaftLog) Append(entries ...*pb.Entry) {
 	for _, ent := range entries {
 		if l.LastIndex() < ent.Index {

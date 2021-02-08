@@ -208,18 +208,10 @@ func newRaft(c *Config) *Raft {
 	return &raft
 }
 func (r *Raft) send(m pb.Message) {
-	/*
-		if m.To == 0 {
-			fmt.Println(m)
-			log.Panic("invalid msg to 0")
-		}
-	*/
 	r.msgs = append(r.msgs, m)
 }
 
-func (r *Raft) GetId() uint64 {
-	return r.id
-}
+// Send a timeout msg to another node
 func (r *Raft) sendTimeoutNow(to uint64) {
 	r.send(pb.Message{
 		MsgType: pb.MessageType_MsgTimeoutNow,
@@ -229,6 +221,7 @@ func (r *Raft) sendTimeoutNow(to uint64) {
 	})
 }
 
+// Send a snapshot msg to another node
 func (r *Raft) sendSnapshot(to uint64) {
 	s, err := r.RaftLog.storage.Snapshot()
 	if err != nil {
@@ -248,8 +241,6 @@ func (r *Raft) sendSnapshot(to uint64) {
 // sendAppend sends an append RPC with new entries (if any) and the
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
-	////fmt.Println("push msg to ", to)
-	//debug.PrintStack()
 	// Your Code Here (2A).
 	next := r.Prs[to].Next
 	index := next - 1
@@ -276,6 +267,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 	return true
 }
 
+// Boradcast append msgs to all peers
 func (r *Raft) bcastAppend() {
 	for to := range r.Prs {
 		if to != r.id {
@@ -296,6 +288,7 @@ func (r *Raft) sendHeartbeat(to uint64) {
 	})
 }
 
+// Send a requestVote msg to another peer
 func (r *Raft) sendRequestVote(to uint64) {
 	r.send(pb.Message{
 		MsgType: pb.MessageType_MsgRequestVote,
@@ -379,6 +372,7 @@ func (r *Raft) becomeCandidate() {
 	r.leadTransferee = 0
 }
 
+// Boardcast requestVote msgs to all peers
 func (r *Raft) bcastRequstVote() {
 	for to := range r.Prs {
 		if to != r.id {
@@ -387,6 +381,7 @@ func (r *Raft) bcastRequstVote() {
 	}
 }
 
+// Make the node become candidate and requst votes from others
 func (r *Raft) campaign() {
 	r.becomeCandidate()
 	if len(r.Prs) == 1 {
@@ -440,14 +435,11 @@ func (r *Raft) Step(m pb.Message) error {
 	if _, ok := r.Prs[r.id]; !ok && m.MsgType == pb.MessageType_MsgTimeoutNow {
 		return nil
 	}
+
 	if !IsLocalMsg(m.MsgType) {
-		/*
-			if _, ok := r.Prs[m.From]; !ok && m.From != 0 {
-				return nil
-			}
-		*/
 		if m.Term < r.Term {
-			// should reject
+			// should reject these msgs
+			// the ignore or reject logic should be implemented in more specified msg handlers
 		} else if m.Term > r.Term {
 			r.becomeFollower(m.Term, 0)
 		}
@@ -542,11 +534,6 @@ func (r *Raft) handleBeat() {
 	for to := range r.Prs {
 		if to != r.id {
 			r.sendHeartbeat(to)
-			/*
-				if r.Prs[to].Next == 1 {
-					r.sendSnapshot(to)
-				}
-			*/
 		}
 	}
 }
@@ -681,7 +668,7 @@ func (r *Raft) handlePropose(m pb.Message) {
 			if r.RaftLog.applied >= r.PendingConfIndex {
 				r.PendingConfIndex = ent.Index
 			} else {
-				// assume there's only one entry and it's confchange
+				// Assume there's only one entry and it's confchange
 				log.Info("deny conf")
 				return
 			}
@@ -718,7 +705,6 @@ func (r *Raft) handleRequestVote(m pb.Message) {
 		if (r.Vote == 0 || r.Vote == m.From) && upToDate {
 			r.Vote = m.From
 			rsp.Reject = false
-			//r.electionElapsed = 0
 		}
 	}
 	r.send(rsp)
@@ -753,7 +739,6 @@ func (r *Raft) handleRequestVoteResponse(m pb.Message) {
 // handleHeartbeat handle Heartbeat RPC request
 func (r *Raft) handleHeartbeat(m pb.Message) {
 	// Your Code Here (2A).
-	//log.Info(r.id, "<-", m.From)
 	if m.Term < r.Term {
 		r.rejectMessage(m)
 		return
@@ -835,7 +820,6 @@ func (r *Raft) removeNode(id uint64) {
 		delete(r.Prs, id)
 		r.maybeCommit()
 		if r.State == StateCandidate {
-			log.Panic("not here")
 			r.maybeEndCampaign()
 		}
 	}
