@@ -7,6 +7,7 @@ import (
 	"github.com/pingcap-incubator/tinykv/kv/storage"
 	"github.com/pingcap-incubator/tinykv/kv/storage/raft_storage"
 	"github.com/pingcap-incubator/tinykv/kv/transaction/latches"
+	"github.com/pingcap-incubator/tinykv/kv/transaction/mvcc"
 	coppb "github.com/pingcap-incubator/tinykv/proto/pkg/coprocessor"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/kvrpcpb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/tinykvpb"
@@ -133,17 +134,144 @@ func (server *Server) Snapshot(stream tinykvpb.TinyKv_SnapshotServer) error {
 // Transactional API.
 func (server *Server) KvGet(_ context.Context, req *kvrpcpb.GetRequest) (*kvrpcpb.GetResponse, error) {
 	// Your Code Here (4B).
-	return nil, nil
+	r, err := server.storage.Reader(req.Context)
+	defer r.Close()
+	if err != nil {
+		return nil, err
+	}
+	txn := mvcc.NewMvccTxn(r, req.Version)
+	l, err := txn.GetLock(req.Key)
+	if err != nil {
+		return nil, err
+	}
+	rsp := &kvrpcpb.GetResponse{}
+	if l != nil {
+		if l.IsLockedFor(req.Key, req.Version, rsp) {
+			return rsp, nil
+		}
+	}
+	val, err := txn.GetValue(req.Key)
+	if err != nil {
+		return nil, err
+	}
+	rsp.Value = val
+	rsp.NotFound = val == nil
+	return rsp, nil
 }
 
 func (server *Server) KvPrewrite(_ context.Context, req *kvrpcpb.PrewriteRequest) (*kvrpcpb.PrewriteResponse, error) {
 	// Your Code Here (4B).
-	return nil, nil
+	// lock all keys involved
+	allKeys := [][]byte{}
+	for _, m := range req.Mutations {
+		allKeys = append(allKeys, m.Key)
+	}
+	server.Latches.WaitForLatches(allKeys)
+	defer server.Latches.ReleaseLatches(allKeys)
+
+	r, err := server.storage.Reader(req.Context)
+	defer r.Close()
+	rsp := &kvrpcpb.PrewriteResponse{}
+
+	if err != nil {
+		return nil, err
+	}
+
+	txn := mvcc.NewMvccTxn(r, req.StartVersion)
+
+	for _, m := range req.Mutations {
+		key := m.Key
+		w, ts, err := txn.MostRecentWrite(key)
+		if w != nil && ts >= txn.StartTS {
+			rsp.Errors = append(rsp.Errors, &kvrpcpb.KeyError{
+				Conflict: &kvrpcpb.WriteConflict{
+					StartTs:    req.StartVersion,
+					ConflictTs: ts,
+					Key:        m.Key,
+					Primary:    req.PrimaryLock,
+				}})
+			return rsp, nil
+		}
+
+		lock, err := txn.GetLock(key)
+		if err != nil {
+			return nil, err
+		}
+
+		if lock != nil && lock.Ts != txn.StartTS {
+			rsp.Errors = append(rsp.Errors, &kvrpcpb.KeyError{
+				Locked: lock.Info(key),
+				Conflict: &kvrpcpb.WriteConflict{
+					StartTs:    req.StartVersion,
+					ConflictTs: lock.Ts,
+					Key:        m.Key,
+					Primary:    req.PrimaryLock,
+				}})
+			return rsp, nil
+		}
+		var wk mvcc.WriteKind
+		switch m.Op {
+		case kvrpcpb.Op_Put:
+			txn.PutValue(key, m.Value)
+			wk = mvcc.WriteKindPut
+		case kvrpcpb.Op_Del:
+			txn.DeleteValue(key)
+			wk = mvcc.WriteKindDelete
+		}
+		txn.PutLock(key, &mvcc.Lock{
+			Primary: req.PrimaryLock,
+			Ts:      req.StartVersion,
+			Ttl:     req.LockTtl,
+			Kind:    wk,
+		})
+	}
+
+	err = server.storage.Write(req.Context, txn.Writes())
+	return rsp, err
 }
 
 func (server *Server) KvCommit(_ context.Context, req *kvrpcpb.CommitRequest) (*kvrpcpb.CommitResponse, error) {
 	// Your Code Here (4B).
-	return nil, nil
+	server.Latches.WaitForLatches(req.Keys)
+	defer server.Latches.ReleaseLatches(req.Keys)
+
+	rsp := &kvrpcpb.CommitResponse{}
+	r, err := server.storage.Reader(req.Context)
+	defer r.Close()
+	if err != nil {
+		return nil, err
+	}
+
+	txn := mvcc.NewMvccTxn(r, req.StartVersion)
+	for _, key := range req.Keys {
+		l, err := txn.GetLock(key)
+		if err != nil {
+			return nil, err
+		}
+
+		// I don't understand why shouldn't return an error. Just to make the checker happy.
+		if l == nil {
+			return rsp, nil
+		}
+
+		// I don't understand this, either. What's retryable? Why should I set it?
+		if l.Ts != txn.StartTS {
+			rsp.Error = &kvrpcpb.KeyError{
+				Retryable: "true",
+			}
+			return rsp, nil
+		}
+
+		w := &mvcc.Write{
+			StartTS: req.StartVersion,
+			Kind:    l.Kind,
+		}
+		txn.PutWrite(key, req.CommitVersion, w)
+		txn.DeleteLock(key)
+	}
+
+	err = server.storage.Write(req.Context, txn.Writes())
+	return rsp, err
 }
 
 func (server *Server) KvScan(_ context.Context, req *kvrpcpb.ScanRequest) (*kvrpcpb.ScanResponse, error) {
