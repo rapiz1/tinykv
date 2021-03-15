@@ -2,6 +2,9 @@
 
 This is my submission for PingCap TalentPlan TinyKV course. You can find more about me on [my GitHub homepage](https://github.com/Rapiz1).
 
+## Notes
+[doc/notes](doc/notes.md)
+
 ## Correctness
 
 I tried my best to complete the project, but still failed to pass some tests of 3B splitting. All other tests should pass.
